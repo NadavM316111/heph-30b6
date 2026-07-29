@@ -1,99 +1,90 @@
 import { NextRequest, NextResponse } from "next/server";
 import { q, ensure, hasDb } from "@/lib/db";
 
+async function initTable() {
+  await ensure(`
+    CREATE TABLE IF NOT EXISTS confi_nda_signatures (
+      id SERIAL PRIMARY KEY,
+      conversation_id TEXT NOT NULL,
+      signer_confi_id TEXT NOT NULL,
+      signer_phone TEXT NOT NULL,
+      signer_display_name TEXT NOT NULL,
+      ip_address TEXT,
+      user_agent TEXT,
+      signed_at TIMESTAMPTZ DEFAULT NOW(),
+      nda_version TEXT DEFAULT '1.0',
+      UNIQUE(conversation_id, signer_confi_id)
+    )
+  `);
+}
+
 export async function POST(req: NextRequest) {
+  if (!hasDb()) {
+    return NextResponse.json({ error: "Database not configured" }, { status: 503 });
+  }
+
   try {
+    await initTable();
     const body = await req.json();
-    const {
-      conversationId,
-      identityFingerprint,
-      ndaFingerprint,
-      legalName,
-      email,
-      acceptedAt,
-      deviceMeta,
-    } = body;
+    const { conversationId, signerConfiId, signerPhone, signerDisplayName } = body;
 
-    if (!conversationId || !identityFingerprint || !ndaFingerprint) {
-      return NextResponse.json({ error: "Missing required NDA fields" }, { status: 400 });
+    if (!conversationId || !signerConfiId || !signerPhone || !signerDisplayName) {
+      return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
-    if (!hasDb()) {
-      return NextResponse.json({ ok: true, stored: false, ndaFingerprint });
-    }
+    const ip = req.headers.get("x-forwarded-for") ?? req.headers.get("x-real-ip") ?? "unknown";
+    const ua = req.headers.get("user-agent") ?? "unknown";
 
-    await ensure();
-
+    // Upsert signature
     await q(
-      `CREATE TABLE IF NOT EXISTS confi_nda_records (
-        id SERIAL PRIMARY KEY,
-        conversation_id TEXT NOT NULL,
-        identity_fingerprint TEXT NOT NULL,
-        nda_fingerprint TEXT NOT NULL UNIQUE,
-        legal_name TEXT,
-        email TEXT,
-        accepted_at TIMESTAMPTZ,
-        device_meta JSONB,
-        created_at TIMESTAMPTZ DEFAULT NOW()
-      )`,
-      []
+      `INSERT INTO confi_nda_signatures
+        (conversation_id, signer_confi_id, signer_phone, signer_display_name, ip_address, user_agent)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (conversation_id, signer_confi_id) DO UPDATE SET signed_at = NOW()`,
+      [conversationId, signerConfiId, signerPhone, signerDisplayName, ip, ua]
     );
 
-    await q(
-      `INSERT INTO confi_nda_records
-        (conversation_id, identity_fingerprint, nda_fingerprint, legal_name, email, accepted_at, device_meta)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       ON CONFLICT (nda_fingerprint) DO NOTHING`,
-      [
-        conversationId,
-        identityFingerprint,
-        ndaFingerprint,
-        legalName ?? null,
-        email ?? null,
-        acceptedAt ?? null,
-        deviceMeta ? JSON.stringify(deviceMeta) : null,
-      ]
-    );
-
-    return NextResponse.json({ ok: true, stored: true, ndaFingerprint });
+    return NextResponse.json({
+      ok: true,
+      signatureId: `NDA-${conversationId}-${signerConfiId}-${Date.now()}`,
+      signedAt: new Date().toISOString(),
+    });
   } catch (err) {
-    console.error("[nda] error:", err);
+    console.error("NDA signature error:", err);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
 
 export async function GET(req: NextRequest) {
+  if (!hasDb()) {
+    return NextResponse.json({ error: "Database not configured" }, { status: 503 });
+  }
+
   try {
+    await initTable();
     const { searchParams } = new URL(req.url);
     const conversationId = searchParams.get("conversationId");
-    const identityFingerprint = searchParams.get("identityFingerprint");
 
-    if (!conversationId && !identityFingerprint) {
-      return NextResponse.json({ error: "Provide conversationId or identityFingerprint" }, { status: 400 });
+    if (!conversationId) {
+      return NextResponse.json({ error: "conversationId required" }, { status: 400 });
     }
 
-    if (!hasDb()) {
-      return NextResponse.json({ ok: true, records: [], stored: false });
-    }
+    const signatures = await q(
+      "SELECT * FROM confi_nda_signatures WHERE conversation_id = $1 ORDER BY signed_at ASC",
+      [conversationId]
+    );
 
-    await ensure();
-
-    let rows;
-    if (conversationId) {
-      rows = await q(
-        `SELECT * FROM confi_nda_records WHERE conversation_id = $1 ORDER BY created_at DESC`,
-        [conversationId]
-      );
-    } else {
-      rows = await q(
-        `SELECT * FROM confi_nda_records WHERE identity_fingerprint = $1 ORDER BY created_at DESC`,
-        [identityFingerprint]
-      );
-    }
-
-    return NextResponse.json({ ok: true, records: Array.isArray(rows) ? rows : [] });
+    return NextResponse.json({
+      conversationId,
+      signatures: signatures.map((s) => ({
+        signerConfiId: s.signer_confi_id,
+        signerDisplayName: s.signer_display_name,
+        signedAt: s.signed_at,
+        ndaVersion: s.nda_version,
+      })),
+    });
   } catch (err) {
-    console.error("[nda GET] error:", err);
+    console.error("NDA GET error:", err);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
