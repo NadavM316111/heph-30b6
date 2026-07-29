@@ -1,14 +1,17 @@
-*, *::before, *::after {
+*,
+*::before,
+*::after {
   box-sizing: border-box;
   margin: 0;
   padding: 0;
 }
 
-html, body {
+html,
+body {
   height: 100%;
-  background: #0a0a0f;
-  color: #ffffff;
-  font-family: 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  width: 100%;
+  overflow: hidden;
+  background: #f5f5f7;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -17,56 +20,54 @@ html, body {
   height: 100%;
 }
 
-input, button, textarea, select {
-  font-family: inherit;
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #d4c8ff;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #6C5CE7;
 }
 
+/* OTP input focus */
+input[id^="otp-"]:focus {
+  border-color: #6C5CE7 !important;
+  outline: none;
+}
+
+/* General input focus */
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: #6C5CE7 !important;
+  outline: none;
+  background: #fff !important;
+}
+
+/* Conversation item hover */
+div[style*="cursor: pointer"]:hover {
+  background: #f8f7ff !important;
+}
+
+/* Smooth transitions */
+button {
+  transition: opacity 0.2s, background 0.2s, transform 0.1s;
+}
+button:active {
+  transform: scale(0.97);
+}
 button:disabled {
   cursor: not-allowed;
 }
 
-/* Custom scrollbar */
-::-webkit-scrollbar {
-  width: 4px;
-}
-
-::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.02);
-}
-
-::-webkit-scrollbar-thumb {
-  background: rgba(110, 231, 183, 0.2);
-  border-radius: 2px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: rgba(110, 231, 183, 0.4);
-}
-
-/* Input focus styles */
-input:focus {
-  border-color: rgba(110, 231, 183, 0.5) !important;
-  box-shadow: 0 0 0 2px rgba(110, 231, 183, 0.08);
-}
-
-/* Smooth transitions */
-* {
-  transition: background-color 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
-}
-
-/* Prevent button focus outlines from looking bad */
-button:focus-visible {
-  outline: 2px solid rgba(110, 231, 183, 0.6);
-  outline-offset: 2px;
-}
-
-/* Prevent layout shift on scroll */
-html {
-  scroll-behavior: smooth;
-}
-
-@media (max-width: 480px) {
-  input, button {
-    font-size: 16px !important; /* Prevent zoom on mobile */
-  }
+/* Upload box hover */
+div[style*="dashed"]:hover {
+  border-color: #6C5CE7 !important;
+  background: #f5f0ff !important;
 }
