@@ -2,522 +2,790 @@
 
 import { useEffect, useState, useRef } from "react";
 
-// ---------- Types ----------
+// ─── Types ────────────────────────────────────────────────────────────────────
 interface User {
-  confiId: string;
   email: string;
-  phone: string;
   displayName: string;
-  avatar: string;
-  bio: string;
-  createdAt: string;
-}
-
-interface Contact {
-  confiId: string;
-  displayName: string;
-  avatar: string;
+  legalName: string;
+  legalNameVerified: boolean;
   phone: string;
-  lastSeen: string;
+  avatarColor: string;
+  sessionToken: string;
 }
 
 interface Message {
   id: string;
-  fromConfiId: string;
-  toConfiId: string;
+  senderId: string;
+  senderName: string;
   text: string;
-  ts: string;
-  confidential: boolean;
-  ndaAccepted?: boolean;
+  timestamp: number;
+  isConfidential: boolean;
 }
 
 interface Conversation {
-  contact: Contact;
+  id: string;
+  participantName: string;
+  participantEmail: string;
+  participantAvatarColor: string;
   messages: Message[];
   confidentialMode: boolean;
+  ndaActivatedAt?: number;
+  ndaActivatedBy?: string;
 }
 
-type Screen =
-  | "splash"
-  | "phone-entry"
-  | "otp-verify"
-  | "profile-setup"
-  | "recovery-setup"
-  | "home"
-  | "chat"
-  | "profile-view"
-  | "account-recovery";
+type AuthStep =
+  | "landing"
+  | "signup_email"
+  | "signup_phone"
+  | "signup_otp"
+  | "signup_password"
+  | "signup_legalname"
+  | "signup_profile"
+  | "login"
+  | "app";
 
-// ---------- Helpers ----------
-function generateConfiId(): string {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let id = "CNFI-";
-  for (let i = 0; i < 12; i++) {
-    if (i === 4 || i === 8) id += "-";
-    id += chars[Math.floor(Math.random() * chars.length)];
-  }
-  return id;
+// ─── Constants ────────────────────────────────────────────────────────────────
+const AVATAR_COLORS = [
+  "#6C63FF", "#FF6584", "#43B89C", "#F7B731", "#FC5C65",
+  "#45AAF2", "#26de81", "#fd9644", "#a55eea", "#2bcbba",
+];
+
+const DEMO_CONVERSATIONS: Conversation[] = [
+  {
+    id: "conv_1",
+    participantName: "Alex Rivera",
+    participantEmail: "alex@example.com",
+    participantAvatarColor: "#6C63FF",
+    confidentialMode: false,
+    messages: [
+      {
+        id: "m1", senderId: "alex@example.com", senderName: "Alex Rivera",
+        text: "Hey! Can we discuss the merger details?", timestamp: Date.now() - 3600000,
+        isConfidential: false,
+      },
+      {
+        id: "m2", senderId: "alex@example.com", senderName: "Alex Rivera",
+        text: "I think we need to keep this strictly confidential.", timestamp: Date.now() - 3500000,
+        isConfidential: false,
+      },
+    ],
+  },
+  {
+    id: "conv_2",
+    participantName: "Jordan Lee",
+    participantEmail: "jordan@example.com",
+    participantAvatarColor: "#FF6584",
+    confidentialMode: true,
+    ndaActivatedAt: Date.now() - 86400000,
+    ndaActivatedBy: "jordan@example.com",
+    messages: [
+      {
+        id: "m3", senderId: "jordan@example.com", senderName: "Jordan Lee",
+        text: "The prototype specs are attached. NDA is active.", timestamp: Date.now() - 86400000,
+        isConfidential: true,
+      },
+    ],
+  },
+];
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+function generateId(): string {
+  return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
 function generateOTP(): string {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
-function formatTime(ts: string): string {
+function formatTime(ts: number): string {
   const d = new Date(ts);
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-function formatDate(ts: string): string {
-  const d = new Date(ts);
-  return d.toLocaleDateString([], { month: "short", day: "numeric" });
+function formatDate(ts: number): string {
+  return new Date(ts).toLocaleDateString("en-US", {
+    year: "numeric", month: "long", day: "numeric",
+    hour: "2-digit", minute: "2-digit",
+  });
 }
 
-function avatarUrl(seed: string, size = 80): string {
-  const colors = ["4F46E5", "7C3AED", "DB2777", "059669", "D97706", "DC2626"];
-  const color = colors[Math.abs(seed.split("").reduce((a, c) => a + c.charCodeAt(0), 0)) % colors.length];
-  const initials = seed.slice(0, 2).toUpperCase();
-  return `data:image/svg+xml,${encodeURIComponent(
-    `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg"><rect width="${size}" height="${size}" rx="${size / 2}" fill="#${color}"/><text x="50%" y="55%" dominant-baseline="middle" text-anchor="middle" font-family="system-ui" font-size="${size * 0.35}" fill="white" font-weight="600">${initials}</text></svg>`
-  )}`;
+function getInitials(name: string): string {
+  return name.split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2);
 }
 
-// ---------- Mock contacts data ----------
-const MOCK_CONTACTS: Contact[] = [
-  { confiId: "CNFI-DEMO-0001-XXXX", displayName: "Alice Monroe", avatar: "", phone: "+1 (555) 234-5678", lastSeen: new Date(Date.now() - 300000).toISOString() },
-  { confiId: "CNFI-DEMO-0002-XXXX", displayName: "Bob Tran", avatar: "", phone: "+1 (555) 345-6789", lastSeen: new Date(Date.now() - 3600000).toISOString() },
-  { confiId: "CNFI-DEMO-0003-XXXX", displayName: "Clara Singh", avatar: "", phone: "+44 20 7946 0958", lastSeen: new Date(Date.now() - 86400000).toISOString() },
-  { confiId: "CNFI-DEMO-0004-XXXX", displayName: "David Park", avatar: "", phone: "+82 10-1234-5678", lastSeen: new Date(Date.now() - 172800000).toISOString() },
-];
+// ─── Sub-components ───────────────────────────────────────────────────────────
 
-MOCK_CONTACTS.forEach((c) => { if (!c.avatar) c.avatar = avatarUrl(c.displayName); });
+function Avatar({ name, color, size = 40 }: { name: string; color: string; size?: number }) {
+  return (
+    <div style={{
+      width: size, height: size, borderRadius: "50%", background: color,
+      display: "flex", alignItems: "center", justifyContent: "center",
+      color: "#fff", fontWeight: 700, fontSize: size * 0.35, flexShrink: 0,
+      userSelect: "none",
+    }}>
+      {getInitials(name)}
+    </div>
+  );
+}
 
-const NDA_TEXT = `INTERNATIONAL NON-DISCLOSURE AGREEMENT
+function LockIcon({ size = 16, color = "currentColor" }: { size?: number; color?: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill={color} style={{ display: "block" }}>
+      <path d="M18 8h-1V6A5 5 0 0 0 7 6v2H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V10a2 2 0 0 0-2-2zm-6 9a2 2 0 1 1 0-4 2 2 0 0 1 0 4zm3.1-9H8.9V6a3.1 3.1 0 0 1 6.2 0v2z" />
+    </svg>
+  );
+}
 
-This Non-Disclosure Agreement ("Agreement") is entered into as of the date of acceptance between the parties engaging in this conversation via Confi Messaging Platform.
+function ShieldIcon({ size = 16, color = "currentColor" }: { size?: number; color?: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill={color} style={{ display: "block" }}>
+      <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z" />
+    </svg>
+  );
+}
 
-1. CONFIDENTIALITY OBLIGATION
-All information shared within this conversation designated as "Confidential" shall be treated as proprietary and confidential. Parties agree not to disclose, reproduce, or transmit any such information to third parties without prior written consent.
+// ─── NDA Modal ────────────────────────────────────────────────────────────────
+function NDAModal({
+  user,
+  conversation,
+  onAccept,
+  onDecline,
+}: {
+  user: User;
+  conversation: Conversation;
+  onAccept: () => void;
+  onDecline: () => void;
+}) {
+  const [scrolled, setScrolled] = useState(false);
+  const [agreed, setAgreed] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const ndaDate = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
 
-2. JURISDICTION & GOVERNING LAW
-This Agreement is governed by international commercial law principles, including but not limited to UNCITRAL Model Law provisions, and is enforceable across all signatory nations of the Hague Convention on Choice of Court Agreements.
+  const handleScroll = () => {
+    if (!scrollRef.current) return;
+    const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
+    if (scrollTop + clientHeight >= scrollHeight - 20) setScrolled(true);
+  };
 
-3. SCOPE OF PROTECTION
-Confidential information includes but is not limited to: business strategies, financial data, personal information, technical specifications, and any other material shared within this confidential conversation thread.
+  if (!user.legalNameVerified) {
+    return (
+      <div style={styles.modalOverlay}>
+        <div style={{ ...styles.modalBox, maxWidth: 420 }}>
+          <div style={{ textAlign: "center", marginBottom: 20 }}>
+            <ShieldIcon size={48} color="#FC5C65" />
+            <h2 style={{ margin: "12px 0 8px", color: "#FC5C65" }}>Identity Not Verified</h2>
+            <p style={{ color: "#64748b", lineHeight: 1.6 }}>
+              You must verify your legal name before activating Confidential Mode.
+              Your legal name will be legally binding on the NDA.
+            </p>
+          </div>
+          <button onClick={onDecline} style={{ ...styles.btnPrimary, width: "100%", background: "#FC5C65" }}>
+            Close
+          </button>
+        </div>
+      </div>
+    );
+  }
 
-4. DURATION
-This obligation of confidentiality shall remain in effect for a period of five (5) years from the date of disclosure, or indefinitely for information constituting trade secrets.
+  return (
+    <div style={styles.modalOverlay}>
+      <div style={{ ...styles.modalBox, maxWidth: 680 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+          <ShieldIcon size={28} color="#6C63FF" />
+          <h2 style={{ margin: 0, color: "#1e293b" }}>International Non-Disclosure Agreement</h2>
+        </div>
 
-5. BINDING ON SUCCESSORS
-This Agreement is binding upon and inures to the benefit of the parties and their respective heirs, executors, administrators, legal representatives, successors, and assigns.
+        <div style={{
+          background: "#fef9c3", border: "1px solid #fde047", borderRadius: 8,
+          padding: "10px 14px", marginBottom: 16, fontSize: 13, color: "#713f12",
+        }}>
+          ⚠️ <strong>LEGALLY BINDING:</strong> This NDA is enforceable under applicable international law.
+          Your verified legal name <strong>"{user.legalName}"</strong> will be attached to this agreement.
+        </div>
 
-6. DIGITAL SIGNATURE & CONFI ID BINDING
-Your Confi User ID serves as your digital signature and is cryptographically bound to your verified phone number. Acceptance of this Agreement constitutes a legally binding electronic signature under applicable e-signature laws including the U.S. ESIGN Act and EU eIDAS Regulation.
+        <div
+          ref={scrollRef}
+          onScroll={handleScroll}
+          style={{
+            height: 320, overflowY: "auto", border: "1px solid #e2e8f0",
+            borderRadius: 8, padding: "16px 20px", fontSize: 13, lineHeight: 1.8,
+            color: "#334155", background: "#f8fafc",
+          }}
+        >
+          <p style={{ textAlign: "center", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>
+            CONFI MESSAGING — MUTUAL NON-DISCLOSURE AGREEMENT
+          </p>
+          <p style={{ textAlign: "center", color: "#64748b", marginBottom: 20 }}>
+            Effective Date: {ndaDate}
+          </p>
 
-7. REMEDIES
-Breach of this Agreement may result in injunctive relief, monetary damages, and legal fees. Parties consent to jurisdiction in the venue of the enforcing party's choice.
+          <p><strong>PARTIES:</strong></p>
+          <p>
+            This Mutual Non-Disclosure Agreement ("Agreement") is entered into as of {ndaDate}, by and between:
+          </p>
+          <ul>
+            <li><strong>Disclosing Party:</strong> {user.legalName} (Verified User, Confi Platform)</li>
+            <li><strong>Receiving Party:</strong> {conversation.participantName} (Confi Platform Participant)</li>
+          </ul>
 
-By tapping "Accept & Enable Confidential Mode", you electronically sign this Agreement and agree to all terms herein.`;
+          <p><strong>1. DEFINITION OF CONFIDENTIAL INFORMATION</strong></p>
+          <p>
+            "Confidential Information" means any data or information that is proprietary to either Party
+            and not generally known to the public, whether in tangible or intangible form, whenever and
+            however disclosed, including but not limited to: (i) any marketing strategies, plans, financial
+            information, or projections, operations, sales estimates, business plans and performance results
+            relating to the past, present or future business activities of such Party; (ii) plans for products
+            or services, and customer or supplier lists; (iii) any scientific or technical information,
+            invention, design, process, procedure, formula, improvement, technology or method; (iv) any
+            concepts, reports, data, know-how, works-in-progress, designs, development tools, specifications,
+            computer software, source code, object code, flow charts, databases, inventions, information
+            and trade secrets; and (v) any other information that should reasonably be recognized as
+            confidential information of the Disclosing Party.
+          </p>
 
-// ---------- Main Component ----------
+          <p><strong>2. OBLIGATIONS OF RECEIVING PARTY</strong></p>
+          <p>The Receiving Party agrees to:</p>
+          <ul>
+            <li>Hold the Confidential Information in strict confidence;</li>
+            <li>Not disclose, publish, or disseminate Confidential Information to anyone other than
+              persons employed or engaged by the Receiving Party who have a need to know and have
+              signed a confidentiality agreement with at least as protective terms;</li>
+            <li>Use the Confidential Information solely for the purpose of the business relationship
+              between the Parties;</li>
+            <li>Protect Confidential Information using reasonable care, but no less than the same
+              degree of care used to protect its own confidential information.</li>
+          </ul>
+
+          <p><strong>3. INTERNATIONAL JURISDICTION & GOVERNING LAW</strong></p>
+          <p>
+            This Agreement shall be governed by and construed in accordance with the laws of the
+            jurisdiction in which the Disclosing Party is domiciled, with supplementary reference to
+            the UNCITRAL Model Law on International Commercial Arbitration, the Hague Convention on
+            Choice of Court Agreements (2005), and applicable provisions of the United Nations
+            Convention on Contracts for the International Sale of Goods (CISG) where relevant.
+            Any dispute arising under this Agreement shall be subject to binding international
+            arbitration under ICC Rules.
+          </p>
+
+          <p><strong>4. TERM</strong></p>
+          <p>
+            This Agreement shall remain in effect for a period of five (5) years from the Effective
+            Date, unless earlier terminated by mutual written consent of both Parties. Obligations
+            with respect to Confidential Information disclosed prior to termination shall survive
+            for an additional three (3) years following termination.
+          </p>
+
+          <p><strong>5. REMEDIES</strong></p>
+          <p>
+            Each Party acknowledges that breach of this Agreement may cause irreparable harm for
+            which monetary damages would be an inadequate remedy. Accordingly, either Party may
+            seek equitable relief, including injunction and specific performance, in addition to all
+            other remedies available at law or in equity, without the requirement of posting bond
+            or other security.
+          </p>
+
+          <p><strong>6. EXCEPTIONS</strong></p>
+          <p>This Agreement does not apply to information that:</p>
+          <ul>
+            <li>Is or becomes publicly known through no breach of this Agreement;</li>
+            <li>Was rightfully known to the Receiving Party prior to disclosure;</li>
+            <li>Is independently developed by the Receiving Party without use of Confidential Information;</li>
+            <li>Must be disclosed by law, regulation, or court order (with prior notice to Disclosing Party).</li>
+          </ul>
+
+          <p><strong>7. ENTIRE AGREEMENT</strong></p>
+          <p>
+            This Agreement constitutes the entire agreement between the Parties with respect to the
+            subject matter hereof and supersedes all prior or contemporaneous agreements, understandings,
+            negotiations and discussions, whether oral or written. This Agreement may not be amended
+            except by a written instrument signed by both Parties. The digital acceptance of this
+            Agreement within the Confi platform, using verified legal identity, constitutes a valid
+            electronic signature under the UNCITRAL Model Law on Electronic Commerce and applicable
+            national e-signature laws.
+          </p>
+
+          <p style={{ marginTop: 24, textAlign: "center", fontStyle: "italic", color: "#64748b" }}>
+            — End of Agreement —
+          </p>
+        </div>
+
+        {!scrolled && (
+          <p style={{ fontSize: 12, color: "#94a3b8", textAlign: "center", margin: "8px 0" }}>
+            ↓ Scroll to read the full agreement before accepting
+          </p>
+        )}
+
+        {scrolled && (
+          <label style={{
+            display: "flex", alignItems: "flex-start", gap: 10, margin: "14px 0",
+            cursor: "pointer", fontSize: 13, color: "#334155",
+          }}>
+            <input
+              type="checkbox"
+              checked={agreed}
+              onChange={(e) => setAgreed(e.target.checked)}
+              style={{ marginTop: 2, width: 16, height: 16, flexShrink: 0 }}
+            />
+            <span>
+              I, <strong>{user.legalName}</strong>, have read and agree to the terms of this
+              International Non-Disclosure Agreement. I understand this is legally binding.
+            </span>
+          </label>
+        )}
+
+        <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+          <button onClick={onDecline} style={{ ...styles.btnSecondary, flex: 1 }}>
+            Decline
+          </button>
+          <button
+            onClick={onAccept}
+            disabled={!agreed}
+            style={{
+              ...styles.btnPrimary, flex: 2,
+              opacity: agreed ? 1 : 0.4,
+              cursor: agreed ? "pointer" : "not-allowed",
+            }}
+          >
+            <ShieldIcon size={14} color="#fff" /> Accept &amp; Activate Confidential Mode
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Profile Modal ─────────────────────────────────────────────────────────────
+function ProfileModal({ user, onClose, onUpdate }: {
+  user: User;
+  onClose: () => void;
+  onUpdate: (updates: Partial<User>) => void;
+}) {
+  const [displayName, setDisplayName] = useState(user.displayName);
+  const [selectedColor, setSelectedColor] = useState(user.avatarColor);
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = () => {
+    setSaving(true);
+    setTimeout(() => {
+      onUpdate({ displayName, avatarColor: selectedColor });
+      setSaving(false);
+      onClose();
+    }, 400);
+  };
+
+  return (
+    <div style={styles.modalOverlay}>
+      <div style={{ ...styles.modalBox, maxWidth: 420 }}>
+        <h2 style={{ margin: "0 0 20px", color: "#1e293b" }}>Edit Profile</h2>
+
+        <div style={{ textAlign: "center", marginBottom: 20 }}>
+          <Avatar name={displayName || "?"} color={selectedColor} size={80} />
+        </div>
+
+        <div style={styles.fieldGroup}>
+          <label style={styles.label}>Avatar Color</label>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {AVATAR_COLORS.map((c) => (
+              <button
+                key={c}
+                onClick={() => setSelectedColor(c)}
+                style={{
+                  width: 32, height: 32, borderRadius: "50%", background: c,
+                  border: selectedColor === c ? "3px solid #1e293b" : "3px solid transparent",
+                  cursor: "pointer", padding: 0,
+                }}
+              />
+            ))}
+          </div>
+        </div>
+
+        <div style={styles.fieldGroup}>
+          <label style={styles.label}>Display Name</label>
+          <input
+            style={styles.input}
+            value={displayName}
+            onChange={(e) => setDisplayName(e.target.value)}
+            maxLength={40}
+          />
+        </div>
+
+        <div style={{
+          background: "#f1f5f9", borderRadius: 8, padding: "12px 14px",
+          marginBottom: 16, fontSize: 13,
+        }}>
+          <p style={{ margin: "0 0 4px", fontWeight: 600, color: "#475569" }}>
+            <ShieldIcon size={13} color="#6C63FF" /> Legal Name (NDA-Binding)
+          </p>
+          <p style={{ margin: 0, color: "#1e293b", fontWeight: 500 }}>{user.legalName}</p>
+          <p style={{ margin: "4px 0 0", fontSize: 11, color: "#94a3b8" }}>
+            Legal name cannot be changed after verification. Contact support if incorrect.
+          </p>
+        </div>
+
+        <div style={{ display: "flex", gap: 10 }}>
+          <button onClick={onClose} style={{ ...styles.btnSecondary, flex: 1 }}>Cancel</button>
+          <button onClick={handleSave} disabled={saving} style={{ ...styles.btnPrimary, flex: 2 }}>
+            {saving ? "Saving…" : "Save Changes"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Main Component ───────────────────────────────────────────────────────────
 export default function ConfiApp() {
-  const [screen, setScreen] = useState<Screen>("splash");
+  const [step, setStep] = useState<AuthStep>("landing");
   const [user, setUser] = useState<User | null>(null);
+
+  // Auth form state
+  const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
-  const [countryCode, setCountryCode] = useState("+1");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [otp, setOtp] = useState("");
   const [generatedOtp, setGeneratedOtp] = useState("");
-  const [otpTimer, setOtpTimer] = useState(60);
-  const [otpError, setOtpError] = useState("");
-  const [profileData, setProfileData] = useState({ displayName: "", bio: "" });
-  const [recoveryEmail, setRecoveryEmail] = useState("");
-  const [recoveryPin, setRecoveryPin] = useState("");
-  const [conversations, setConversations] = useState<Map<string, Conversation>>(new Map());
-  const [activeConvo, setActiveConvo] = useState<string | null>(null);
-  const [messageInput, setMessageInput] = useState("");
+  const [legalFirstName, setLegalFirstName] = useState("");
+  const [legalLastName, setLegalLastName] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [avatarColor, setAvatarColor] = useState(AVATAR_COLORS[0]);
+  const [authError, setAuthError] = useState("");
+  const [authLoading, setAuthLoading] = useState(false);
+
+  // App state
+  const [conversations, setConversations] = useState<Conversation[]>(DEMO_CONVERSATIONS);
+  const [activeConvId, setActiveConvId] = useState<string | null>(null);
+  const [messageText, setMessageText] = useState("");
   const [showNDA, setShowNDA] = useState(false);
-  const [ndaConvoId, setNdaConvoId] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const [recoveryMode, setRecoveryMode] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
-  const [editingProfile, setEditingProfile] = useState(false);
-  const [editProfile, setEditProfile] = useState({ displayName: "", bio: "" });
+  const [newConvEmail, setNewConvEmail] = useState("");
+  const [showNewConv, setShowNewConv] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  const [toast, setToast] = useState("");
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Track page
+  // Track page view
   useEffect(() => {
-    fetch("/api/track", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: window.location.pathname }) }).catch(() => {});
+    fetch("/api/track", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: window.location.pathname }),
+    }).catch(() => {});
   }, []);
 
-  // Load session
+  // Load persisted session
   useEffect(() => {
-    const stored = localStorage.getItem("confi_user");
-    if (stored) {
-      try {
-        const u = JSON.parse(stored) as User;
+    try {
+      const raw = localStorage.getItem("confi_user");
+      if (raw) {
+        const u = JSON.parse(raw) as User;
         setUser(u);
-        initConversations(u.confiId);
-        setScreen("home");
-      } catch { /* ignore */ }
+        setStep("app");
+      }
+      const convRaw = localStorage.getItem("confi_conversations");
+      if (convRaw) setConversations(JSON.parse(convRaw));
+    } catch {
+      // ignore
     }
-    const splashTimer = setTimeout(() => {
-      if (!localStorage.getItem("confi_user")) setScreen("phone-entry");
-    }, 2000);
-    return () => clearTimeout(splashTimer);
   }, []);
 
-  // OTP timer
-  useEffect(() => {
-    if (screen === "otp-verify") {
-      setOtpTimer(60);
-      timerRef.current = setInterval(() => {
-        setOtpTimer((t) => { if (t <= 1) { clearInterval(timerRef.current!); return 0; } return t - 1; });
-      }, 1000);
-    }
-    return () => { if (timerRef.current) clearInterval(timerRef.current); };
-  }, [screen]);
-
-  // Scroll to bottom of messages
+  // Scroll to bottom on new messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [conversations, activeConvo]);
+  }, [conversations, activeConvId]);
 
-  function showToast(msg: string) {
-    setToast(msg);
-    setTimeout(() => setToast(""), 3000);
-  }
+  const persistUser = (u: User) => {
+    localStorage.setItem("confi_user", JSON.stringify(u));
+  };
 
-  function initConversations(myConfiId: string) {
-    const stored = localStorage.getItem(`confi_convos_${myConfiId}`);
-    if (stored) {
-      try {
-        const data = JSON.parse(stored) as Array<[string, Conversation]>;
-        setConversations(new Map(data));
-        return;
-      } catch { /* fallback */ }
+  const persistConversations = (convs: Conversation[]) => {
+    localStorage.setItem("confi_conversations", JSON.stringify(convs));
+  };
+
+  const activeConv = conversations.find((c) => c.id === activeConvId) ?? null;
+
+  // ── Auth handlers ──────────────────────────────────────────────────────────
+
+  const handleSignupEmail = (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError("");
+    if (!email.includes("@")) { setAuthError("Enter a valid email address."); return; }
+    setStep("signup_phone");
+  };
+
+  const handleSignupPhone = (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError("");
+    const cleaned = phone.replace(/\D/g, "");
+    if (cleaned.length < 7) { setAuthError("Enter a valid phone number."); return; }
+    const code = generateOTP();
+    setGeneratedOtp(code);
+    // In production this would send real SMS; here we show it for demo
+    alert(`[Demo] Your Confi OTP is: ${code}\n\nIn production this is sent via SMS.`);
+    setStep("signup_otp");
+  };
+
+  const handleVerifyOtp = (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError("");
+    if (otp.trim() !== generatedOtp) {
+      setAuthError("Incorrect OTP. Please try again.");
+      return;
     }
-    // Seed with mock conversations
-    const initial = new Map<string, Conversation>();
-    MOCK_CONTACTS.slice(0, 2).forEach((contact) => {
-      initial.set(contact.confiId, {
-        contact,
-        messages: [
-          {
-            id: `msg_${Date.now()}_1`,
-            fromConfiId: contact.confiId,
-            toConfiId: myConfiId,
-            text: `Hey! Welcome to Confi. I'm ${contact.displayName} 👋`,
-            ts: new Date(Date.now() - 3600000).toISOString(),
-            confidential: false,
-          },
-          {
-            id: `msg_${Date.now()}_2`,
-            fromConfiId: myConfiId,
-            toConfiId: contact.confiId,
-            text: "Thanks! Excited to try this out.",
-            ts: new Date(Date.now() - 3500000).toISOString(),
-            confidential: false,
-          },
-        ],
-        confidentialMode: false,
-      });
-    });
-    setConversations(initial);
-    saveConversations(myConfiId, initial);
-  }
+    setStep("signup_password");
+  };
 
-  function saveConversations(confiId: string, convos: Map<string, Conversation>) {
-    localStorage.setItem(`confi_convos_${confiId}`, JSON.stringify(Array.from(convos.entries())));
-  }
+  const handleSetPassword = (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError("");
+    if (password.length < 8) { setAuthError("Password must be at least 8 characters."); return; }
+    if (password !== confirmPassword) { setAuthError("Passwords do not match."); return; }
+    setStep("signup_legalname");
+  };
 
-  // ---------- Auth Flow ----------
-  async function handleSendOTP() {
-    if (phone.replace(/\D/g, "").length < 7) { setError("Enter a valid phone number."); return; }
-    setLoading(true);
-    setError("");
-    const otp = generateOTP();
-    setGeneratedOtp(otp);
-    // Simulate SMS delay
-    await new Promise((r) => setTimeout(r, 800));
-    setLoading(false);
-    setScreen("otp-verify");
-    showToast(`📱 OTP sent! (Demo: ${otp})`);
-  }
-
-  async function handleVerifyOTP() {
-    setOtpError("");
-    if (otp.length !== 6) { setOtpError("Enter the 6-digit code."); return; }
-    if (otp !== generatedOtp) { setOtpError("Incorrect code. Please try again."); return; }
-
-    setLoading(true);
-    const fullPhone = `${countryCode}${phone}`;
-    const emailFallback = `${fullPhone.replace(/\D/g, "")}@confi.app`;
-
-    // Check existing user
-    const existing = localStorage.getItem("confi_user");
-    if (existing) {
-      const u = JSON.parse(existing) as User;
-      if (u.phone === fullPhone) {
-        setUser(u);
-        initConversations(u.confiId);
-        setLoading(false);
-        setScreen("home");
-        return;
-      }
+  const handleLegalName = (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError("");
+    if (!legalFirstName.trim() || !legalLastName.trim()) {
+      setAuthError("Both first and last legal name are required.");
+      return;
     }
+    if (legalFirstName.trim().length < 2 || legalLastName.trim().length < 2) {
+      setAuthError("Names must be at least 2 characters.");
+      return;
+    }
+    setStep("signup_profile");
+  };
 
-    // Register via /api/auth
+  const handleCreateProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError("");
+    if (!displayName.trim()) { setAuthError("Display name is required."); return; }
+    setAuthLoading(true);
     try {
       const res = await fetch("/api/auth", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: "signup", email: emailFallback, password: `otp_${otp}_${Date.now()}` }),
+        body: JSON.stringify({ mode: "signup", email, password }),
       });
       const data = await res.json();
-      if (data.error && !data.error.includes("already")) {
-        // Try login
-        const res2 = await fetch("/api/auth", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ mode: "login", email: emailFallback, password: `otp_fallback` }),
-        });
-        const d2 = await res2.json();
-        if (d2.error) { setError("Auth error. Please try again."); setLoading(false); return; }
+      if (!res.ok || data.error) {
+        setAuthError(data.error ?? "Signup failed. Try a different email.");
+        setAuthLoading(false);
+        return;
       }
-    } catch { /* continue — local fallback */ }
-
-    setLoading(false);
-    setProfileData({ displayName: "", bio: "" });
-    setScreen("profile-setup");
-  }
-
-  async function handleProfileSubmit() {
-    if (!profileData.displayName.trim()) { setError("Display name is required."); return; }
-    setLoading(true);
-    const fullPhone = `${countryCode}${phone}`;
-    const newUser: User = {
-      confiId: generateConfiId(),
-      email: `${fullPhone.replace(/\D/g, "")}@confi.app`,
-      phone: fullPhone,
-      displayName: profileData.displayName.trim(),
-      avatar: avatarUrl(profileData.displayName.trim()),
-      bio: profileData.bio.trim(),
-      createdAt: new Date().toISOString(),
-    };
-    await new Promise((r) => setTimeout(r, 500));
-    localStorage.setItem("confi_user", JSON.stringify(newUser));
-    setUser(newUser);
-    initConversations(newUser.confiId);
-    setLoading(false);
-    setScreen("recovery-setup");
-  }
-
-  function handleRecoverySetup() {
-    if (recoveryEmail && !recoveryEmail.includes("@")) { setError("Enter a valid email."); return; }
-    if (recoveryPin && recoveryPin.length < 4) { setError("PIN must be at least 4 digits."); return; }
-    localStorage.setItem("confi_recovery", JSON.stringify({ email: recoveryEmail, pin: recoveryPin, confiId: user?.confiId }));
-    setScreen("home");
-    showToast("✅ Account recovery configured!");
-  }
-
-  function handleAccountRecovery() {
-    const stored = localStorage.getItem("confi_recovery");
-    if (!stored) { setError("No recovery info found."); return; }
-    const rec = JSON.parse(stored);
-    if (recoveryEmail !== rec.email && recoveryPin !== rec.pin) { setError("Recovery details don't match."); return; }
-    const u = localStorage.getItem("confi_user");
-    if (u) {
-      const parsed = JSON.parse(u) as User;
-      setUser(parsed);
-      initConversations(parsed.confiId);
-      setScreen("home");
-      showToast("✅ Account recovered successfully!");
-    } else {
-      setError("No account found with these details.");
-    }
-  }
-
-  function handleLogout() {
-    setUser(null);
-    setConversations(new Map());
-    setScreen("phone-entry");
-    setPhone("");
-    setOtp("");
-    setError("");
-  }
-
-  // ---------- Chat ----------
-  function openChat(confiId: string) {
-    if (!conversations.has(confiId)) {
-      const contact = MOCK_CONTACTS.find((c) => c.confiId === confiId)!;
-      const newConvo: Conversation = { contact, messages: [], confidentialMode: false };
-      const updated = new Map(conversations);
-      updated.set(confiId, newConvo);
-      setConversations(updated);
-      saveConversations(user!.confiId, updated);
-    }
-    setActiveConvo(confiId);
-    setScreen("chat");
-  }
-
-  function sendMessage() {
-    if (!messageInput.trim() || !activeConvo || !user) return;
-    const convo = conversations.get(activeConvo)!;
-    const msg: Message = {
-      id: `msg_${Date.now()}`,
-      fromConfiId: user.confiId,
-      toConfiId: activeConvo,
-      text: messageInput.trim(),
-      ts: new Date().toISOString(),
-      confidential: convo.confidentialMode,
-      ndaAccepted: convo.confidentialMode,
-    };
-    const updated = new Map(conversations);
-    const updatedConvo = { ...convo, messages: [...convo.messages, msg] };
-    updated.set(activeConvo, updatedConvo);
-    setConversations(updated);
-    saveConversations(user.confiId, updated);
-    setMessageInput("");
-
-    // Simulate reply after delay
-    setTimeout(() => {
-      const replies = [
-        "Got it, thanks!",
-        "Interesting, tell me more.",
-        "👍",
-        "That makes sense.",
-        "I'll look into that.",
-        "Absolutely agree.",
-        "Let's discuss further.",
-      ];
-      const reply: Message = {
-        id: `msg_${Date.now()}_r`,
-        fromConfiId: activeConvo,
-        toConfiId: user.confiId,
-        text: replies[Math.floor(Math.random() * replies.length)],
-        ts: new Date().toISOString(),
-        confidential: updatedConvo.confidentialMode,
-        ndaAccepted: updatedConvo.confidentialMode,
+      const legalFullName = `${legalFirstName.trim()} ${legalLastName.trim()}`;
+      const newUser: User = {
+        email: data.email ?? email,
+        displayName: displayName.trim(),
+        legalName: legalFullName,
+        legalNameVerified: true,
+        phone,
+        avatarColor,
+        sessionToken: generateId(),
       };
-      setConversations((prev) => {
-        const c = prev.get(activeConvo);
-        if (!c) return prev;
-        const m = new Map(prev);
-        const updated2 = { ...c, messages: [...c.messages, reply] };
-        m.set(activeConvo, updated2);
-        saveConversations(user.confiId, m);
-        return m;
-      });
-    }, 1200 + Math.random() * 1000);
-  }
-
-  function requestConfidentialMode(convoId: string) {
-    setNdaConvoId(convoId);
-    setShowNDA(true);
-  }
-
-  function acceptNDA() {
-    if (!ndaConvoId || !user) return;
-    const updated = new Map(conversations);
-    const convo = updated.get(ndaConvoId);
-    if (convo) {
-      const systemMsg: Message = {
-        id: `msg_nda_${Date.now()}`,
-        fromConfiId: "SYSTEM",
-        toConfiId: ndaConvoId,
-        text: `🔒 CONFIDENTIAL MODE ACTIVATED\n\nBoth parties have digitally signed the International NDA via Confi ID: ${user.confiId}\n\nAll subsequent messages are protected under international confidentiality law.`,
-        ts: new Date().toISOString(),
-        confidential: true,
-        ndaAccepted: true,
-      };
-      updated.set(ndaConvoId, { ...convo, confidentialMode: true, messages: [...convo.messages, systemMsg] });
-      setConversations(updated);
-      saveConversations(user.confiId, updated);
+      setUser(newUser);
+      persistUser(newUser);
+      setStep("app");
+    } catch {
+      setAuthError("Network error. Please try again.");
     }
-    setShowNDA(false);
-    setNdaConvoId(null);
-    showToast("🔒 Confidential mode activated — NDA signed");
-  }
-
-  function disableConfidentialMode(convoId: string) {
-    const updated = new Map(conversations);
-    const convo = updated.get(convoId);
-    if (convo) {
-      const systemMsg: Message = {
-        id: `msg_nda_off_${Date.now()}`,
-        fromConfiId: "SYSTEM",
-        toConfiId: convoId,
-        text: "🔓 Confidential mode deactivated. Standard messaging resumed.",
-        ts: new Date().toISOString(),
-        confidential: false,
-      };
-      updated.set(convoId, { ...convo, confidentialMode: false, messages: [...convo.messages, systemMsg] });
-      setConversations(updated);
-      saveConversations(user!.confiId, updated);
-    }
-    showToast("🔓 Confidential mode disabled");
-  }
-
-  function saveProfileEdit() {
-    if (!editProfile.displayName.trim() || !user) return;
-    const updated: User = {
-      ...user,
-      displayName: editProfile.displayName.trim(),
-      bio: editProfile.bio.trim(),
-      avatar: avatarUrl(editProfile.displayName.trim()),
-    };
-    setUser(updated);
-    localStorage.setItem("confi_user", JSON.stringify(updated));
-    setEditingProfile(false);
-    showToast("✅ Profile updated!");
-  }
-
-  const filteredContacts = MOCK_CONTACTS.filter(
-    (c) =>
-      c.displayName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.phone.includes(searchQuery)
-  );
-
-  const conversationList = Array.from(conversations.values()).sort((a, b) => {
-    const aLast = a.messages[a.messages.length - 1]?.ts ?? "";
-    const bLast = b.messages[b.messages.length - 1]?.ts ?? "";
-    return bLast.localeCompare(aLast);
-  });
-
-  // ===================== RENDER =====================
-
-  const styles = {
-    app: {
-      maxWidth: 430,
-      margin: "0 auto",
-      height: "100dvh",
-      display: "flex",
-      flexDirection: "column" as const,
-      background: "#fff",
-      position: "relative" as const,
-      overflow: "hidden",
-      fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-      boxShadow: "0 0 40px rgba(0,0,0,0.15)",
-    },
+    setAuthLoading(false);
   };
 
-  // ---- SPLASH ----
-  if (screen === "splash") {
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError("");
+    setAuthLoading(true);
+    try {
+      const res = await fetch("/api/auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "login", email, password }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        setAuthError(data.error ?? "Login failed.");
+        setAuthLoading(false);
+        return;
+      }
+      // Restore or create user profile
+      const existingRaw = localStorage.getItem("confi_user");
+      let restoredUser: User;
+      if (existingRaw) {
+        const existing = JSON.parse(existingRaw) as User;
+        if (existing.email === (data.email ?? email)) {
+          restoredUser = { ...existing, sessionToken: generateId() };
+        } else {
+          restoredUser = {
+            email: data.email ?? email,
+            displayName: email.split("@")[0],
+            legalName: "Not Verified",
+            legalNameVerified: false,
+            phone: "",
+            avatarColor: AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)],
+            sessionToken: generateId(),
+          };
+        }
+      } else {
+        restoredUser = {
+          email: data.email ?? email,
+          displayName: email.split("@")[0],
+          legalName: "Not Verified",
+          legalNameVerified: false,
+          phone: "",
+          avatarColor: AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)],
+          sessionToken: generateId(),
+        };
+      }
+      setUser(restoredUser);
+      persistUser(restoredUser);
+      setStep("app");
+    } catch {
+      setAuthError("Network error. Please try again.");
+    }
+    setAuthLoading(false);
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem("confi_user");
+    setUser(null);
+    setStep("landing");
+    setEmail("");
+    setPassword("");
+    setPhone("");
+    setOtp("");
+    setGeneratedOtp("");
+    setLegalFirstName("");
+    setLegalLastName("");
+    setDisplayName("");
+    setActiveConvId(null);
+  };
+
+  // ── Messaging handlers ─────────────────────────────────────────────────────
+
+  const handleSendMessage = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!messageText.trim() || !activeConv || !user) return;
+    const msg: Message = {
+      id: generateId(),
+      senderId: user.email,
+      senderName: user.displayName,
+      text: messageText.trim(),
+      timestamp: Date.now(),
+      isConfidential: activeConv.confidentialMode,
+    };
+    const updated = conversations.map((c) =>
+      c.id === activeConv.id ? { ...c, messages: [...c.messages, msg] } : c
+    );
+    setConversations(updated);
+    persistConversations(updated);
+    setMessageText("");
+  };
+
+  const handleToggleConfidential = () => {
+    if (!activeConv || !user) return;
+    if (!activeConv.confidentialMode) {
+      setShowNDA(true);
+    } else {
+      // Turn off
+      const updated = conversations.map((c) =>
+        c.id === activeConv.id
+          ? { ...c, confidentialMode: false, ndaActivatedAt: undefined, ndaActivatedBy: undefined }
+          : c
+      );
+      setConversations(updated);
+      persistConversations(updated);
+    }
+  };
+
+  const handleNDAAccept = () => {
+    if (!activeConv || !user) return;
+    const updated = conversations.map((c) =>
+      c.id === activeConv.id
+        ? { ...c, confidentialMode: true, ndaActivatedAt: Date.now(), ndaActivatedBy: user.email }
+        : c
+    );
+    setConversations(updated);
+    persistConversations(updated);
+    setShowNDA(false);
+  };
+
+  const handleNewConversation = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newConvEmail.trim() || !newConvEmail.includes("@")) return;
+    const existing = conversations.find((c) => c.participantEmail === newConvEmail.trim());
+    if (existing) { setActiveConvId(existing.id); setShowNewConv(false); return; }
+    const conv: Conversation = {
+      id: generateId(),
+      participantName: newConvEmail.split("@")[0],
+      participantEmail: newConvEmail.trim(),
+      participantAvatarColor: AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)],
+      messages: [],
+      confidentialMode: false,
+    };
+    const updated = [conv, ...conversations];
+    setConversations(updated);
+    persistConversations(updated);
+    setActiveConvId(conv.id);
+    setNewConvEmail("");
+    setShowNewConv(false);
+  };
+
+  const filteredConvs = conversations.filter((c) =>
+    c.participantName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    c.participantEmail.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  // ── Render: Landing ────────────────────────────────────────────────────────
+  if (step === "landing") {
     return (
-      <div style={styles.app}>
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%)" }}>
-          <div style={{ width: 80, height: 80, borderRadius: 24, background: "rgba(255,255,255,0.2)", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 20, backdropFilter: "blur(10px)", border: "2px solid rgba(255,255,255,0.3)" }}>
-            <span style={{ fontSize: 40 }}>🔐</span>
+      <div style={styles.landingContainer}>
+        <div style={styles.landingCard}>
+          <div style={{ textAlign: "center", marginBottom: 32 }}>
+            <div style={{ display: "flex", justifyContent: "center", marginBottom: 12 }}>
+              <div style={{
+                width: 72, height: 72, borderRadius: "50%",
+                background: "linear-gradient(135deg,#6C63FF,#a855f7)",
+                display: "flex", alignItems: "center", justifyContent: "center",
+              }}>
+                <LockIcon size={36} color="#fff" />
+              </div>
+            </div>
+            <h1 style={{ margin: "0 0 8px", fontSize: 32, fontWeight: 800, color: "#1e293b" }}>
+              Confi
+            </h1>
+            <p style={{ margin: 0, color: "#64748b", fontSize: 15 }}>
+              Secure messaging with legally binding confidentiality
+            </p>
           </div>
-          <h1 style={{ color: "#fff", fontSize: 36, fontWeight: 800, margin: 0, letterSpacing: -1 }}>Confi</h1>
-          <p style={{ color: "rgba(255,255,255,0.8)", marginTop: 8, fontSize: 15 }}>Confidential Messaging, Globally Protected</p>
-          <div style={{ marginTop: 40, display: "flex", gap: 8 }}>
-            {[0, 1, 2].map((i) => (
-              <div key={i} style={{ width: 8, height: 8, borderRadius: 4, background: i === 0 ? "#fff" : "rgba(255,255,255,0.4)", animation: "pulse 1.5s ease-in-out infinite", animationDelay: `${i * 0.3}s` }} />
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <button
+              onClick={() => setStep("signup_email")}
+              style={{ ...styles.btnPrimary, padding: "14px 24px", fontSize: 15 }}
+            >
+              Create Account
+            </button>
+            <button
+              onClick={() => setStep("login")}
+              style={{ ...styles.btnSecondary, padding: "14px 24px", fontSize: 15 }}
+            >
+              Sign In
+            </button>
+          </div>
+
+          <div style={{ marginTop: 28, display: "flex", flexDirection: "column", gap: 10 }}>
+            {[
+              { icon: "🔐", text: "End-to-end encrypted messaging" },
+              { icon: "⚖️", text: "International NDA with one tap" },
+              { icon: "✅", text: "Legal identity verification" },
+              { icon: "🌍", text: "Enforceable across jurisdictions" },
+            ].map((f) => (
+              <div key={f.text} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13, color: "#475569" }}>
+                <span style={{ fontSize: 18 }}>{f.icon}</span>
+                <span>{f.text}</span>
+              </div>
             ))}
           </div>
         </div>
@@ -525,594 +793,724 @@ export default function ConfiApp() {
     );
   }
 
-  // ---- PHONE ENTRY ----
-  if (screen === "phone-entry") {
-    const countryCodes = ["+1", "+44", "+91", "+61", "+33", "+49", "+81", "+86", "+82", "+55", "+34", "+39", "+7", "+971", "+65"];
+  // ── Render: Login ──────────────────────────────────────────────────────────
+  if (step === "login") {
     return (
-      <div style={styles.app}>
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", padding: "48px 28px 32px" }}>
-          <div style={{ marginBottom: 32 }}>
-            <div style={{ width: 56, height: 56, borderRadius: 16, background: "linear-gradient(135deg, #4F46E5, #7C3AED)", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 20 }}>
-              <span style={{ fontSize: 28 }}>🔐</span>
-            </div>
-            <h2 style={{ fontSize: 28, fontWeight: 800, margin: "0 0 8px", color: "#111" }}>Enter your number</h2>
-            <p style={{ color: "#666", margin: 0, fontSize: 15, lineHeight: 1.5 }}>We'll send a one-time verification code to your phone.</p>
-          </div>
-
-          <div style={{ marginBottom: 20 }}>
-            <label style={{ display: "block", fontSize: 13, fontWeight: 600, color: "#555", marginBottom: 8 }}>PHONE NUMBER</label>
-            <div style={{ display: "flex", gap: 10 }}>
-              <select value={countryCode} onChange={(e) => setCountryCode(e.target.value)} style={{ padding: "14px 12px", borderRadius: 12, border: "2px solid #e5e7eb", fontSize: 15, fontWeight: 600, color: "#111", background: "#f9fafb", cursor: "pointer" }}>
-                {countryCodes.map((c) => <option key={c} value={c}>{c}</option>)}
-              </select>
+      <div style={styles.landingContainer}>
+        <div style={styles.landingCard}>
+          <button onClick={() => setStep("landing")} style={styles.backBtn}>← Back</button>
+          <h2 style={styles.authTitle}>Welcome back</h2>
+          <p style={styles.authSubtitle}>Sign in to your Confi account</p>
+          <form onSubmit={handleLogin} style={styles.form}>
+            <div style={styles.fieldGroup}>
+              <label style={styles.label}>Email Address</label>
               <input
-                type="tel"
-                placeholder="(555) 000-0000"
-                value={phone}
-                onChange={(e) => { setPhone(e.target.value); setError(""); }}
-                onKeyDown={(e) => e.key === "Enter" && handleSendOTP()}
-                style={{ flex: 1, padding: "14px 16px", borderRadius: 12, border: `2px solid ${error ? "#ef4444" : "#e5e7eb"}`, fontSize: 16, fontFamily: "inherit", outline: "none", color: "#111" }}
+                style={styles.input} type="email" value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@example.com" required autoFocus
               />
             </div>
-            {error && <p style={{ color: "#ef4444", fontSize: 13, marginTop: 6 }}>{error}</p>}
-          </div>
-
-          <button
-            onClick={handleSendOTP}
-            disabled={loading}
-            style={{ width: "100%", padding: "16px", borderRadius: 14, border: "none", background: loading ? "#a5b4fc" : "linear-gradient(135deg, #4F46E5, #7C3AED)", color: "#fff", fontSize: 16, fontWeight: 700, cursor: loading ? "not-allowed" : "pointer", marginBottom: 16 }}
-          >
-            {loading ? "Sending…" : "Send Verification Code"}
-          </button>
-
-          <button onClick={() => { setRecoveryMode(true); setScreen("account-recovery"); }} style={{ background: "none", border: "none", color: "#4F46E5", fontSize: 14, fontWeight: 600, cursor: "pointer", padding: 8 }}>
-            Recover existing account →
-          </button>
-
-          <div style={{ marginTop: "auto", padding: "16px 0 0", borderTop: "1px solid #f3f4f6" }}>
-            <p style={{ fontSize: 12, color: "#9ca3af", textAlign: "center", margin: 0, lineHeight: 1.6 }}>
-              By continuing, you agree to Confi's Terms of Service and Privacy Policy. Your number is used only for verification.
-            </p>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // ---- OTP VERIFY ----
-  if (screen === "otp-verify") {
-    return (
-      <div style={styles.app}>
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", padding: "48px 28px 32px" }}>
-          <button onClick={() => { setScreen("phone-entry"); setOtp(""); setOtpError(""); }} style={{ background: "none", border: "none", color: "#4F46E5", fontSize: 15, fontWeight: 600, cursor: "pointer", textAlign: "left", padding: 0, marginBottom: 32 }}>
-            ← Back
-          </button>
-
-          <div style={{ marginBottom: 32 }}>
-            <div style={{ width: 56, height: 56, borderRadius: 16, background: "#f0f0ff", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 20 }}>
-              <span style={{ fontSize: 28 }}>📱</span>
+            <div style={styles.fieldGroup}>
+              <label style={styles.label}>Password</label>
+              <input
+                style={styles.input} type="password" value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••" required
+              />
             </div>
-            <h2 style={{ fontSize: 28, fontWeight: 800, margin: "0 0 8px", color: "#111" }}>Verify your number</h2>
-            <p style={{ color: "#666", margin: 0, fontSize: 15, lineHeight: 1.5 }}>
-              Enter the 6-digit code sent to <strong>{countryCode} {phone}</strong>
-            </p>
-          </div>
-
-          <div style={{ marginBottom: 8 }}>
-            <input
-              type="text"
-              inputMode="numeric"
-              pattern="[0-9]*"
-              placeholder="000000"
-              maxLength={6}
-              value={otp}
-              onChange={(e) => { setOtp(e.target.value.replace(/\D/g, "")); setOtpError(""); }}
-              onKeyDown={(e) => e.key === "Enter" && handleVerifyOTP()}
-              style={{ width: "100%", padding: "18px 16px", borderRadius: 14, border: `2px solid ${otpError ? "#ef4444" : "#e5e7eb"}`, fontSize: 28, fontWeight: 700, textAlign: "center", letterSpacing: 16, fontFamily: "monospace", outline: "none", color: "#111", boxSizing: "border-box" }}
-            />
-            {otpError && <p style={{ color: "#ef4444", fontSize: 13, marginTop: 6, textAlign: "center" }}>{otpError}</p>}
-          </div>
-
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
-            <p style={{ color: "#9ca3af", fontSize: 13, margin: 0 }}>
-              {otpTimer > 0 ? `Resend in ${otpTimer}s` : "Code expired"}
-            </p>
-            <button
-              onClick={handleSendOTP}
-              disabled={otpTimer > 0}
-              style={{ background: "none", border: "none", color: otpTimer > 0 ? "#9ca3af" : "#4F46E5", fontSize: 13, fontWeight: 600, cursor: otpTimer > 0 ? "default" : "pointer" }}
-            >
-              Resend Code
+            {authError && <p style={styles.errorText}>{authError}</p>}
+            <button type="submit" disabled={authLoading} style={styles.btnPrimary}>
+              {authLoading ? "Signing in…" : "Sign In"}
             </button>
-          </div>
-
-          <button
-            onClick={handleVerifyOTP}
-            disabled={loading || otp.length !== 6}
-            style={{ width: "100%", padding: "16px", borderRadius: 14, border: "none", background: (loading || otp.length !== 6) ? "#e5e7eb" : "linear-gradient(135deg, #4F46E5, #7C3AED)", color: (loading || otp.length !== 6) ? "#9ca3af" : "#fff", fontSize: 16, fontWeight: 700, cursor: (loading || otp.length !== 6) ? "not-allowed" : "pointer" }}
-          >
-            {loading ? "Verifying…" : "Verify & Continue"}
-          </button>
-
-          <div style={{ marginTop: 20, padding: 16, background: "#fefce8", borderRadius: 12, border: "1px solid #fde68a" }}>
-            <p style={{ margin: 0, fontSize: 13, color: "#92400e" }}>
-              <strong>🧪 Demo Mode:</strong> SMS integration requires Twilio in production. Your OTP was shown in the toast notification above.
-            </p>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // ---- PROFILE SETUP ----
-  if (screen === "profile-setup") {
-    return (
-      <div style={styles.app}>
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", padding: "48px 28px 32px", overflowY: "auto" }}>
-          <div style={{ marginBottom: 32 }}>
-            <div style={{ width: 80, height: 80, borderRadius: "50%", background: profileData.displayName ? `url("${avatarUrl(profileData.displayName)}")` : "linear-gradient(135deg, #e5e7eb, #d1d5db)", backgroundSize: "cover", margin: "0 auto 16px", display: "flex", alignItems: "center", justifyContent: "center" }}>
-              {!profileData.displayName && <span style={{ fontSize: 32, color: "#9ca3af" }}>👤</span>}
-            </div>
-            <h2 style={{ fontSize: 26, fontWeight: 800, margin: "0 0 8px", color: "#111", textAlign: "center" }}>Create your profile</h2>
-            <p style={{ color: "#666", margin: 0, fontSize: 14, lineHeight: 1.5, textAlign: "center" }}>This is how you'll appear to other Confi users.</p>
-          </div>
-
-          <div style={{ marginBottom: 20 }}>
-            <label style={{ display: "block", fontSize: 13, fontWeight: 600, color: "#555", marginBottom: 8 }}>DISPLAY NAME *</label>
-            <input
-              type="text"
-              placeholder="Your name"
-              value={profileData.displayName}
-              onChange={(e) => { setProfileData({ ...profileData, displayName: e.target.value }); setError(""); }}
-              style={{ width: "100%", padding: "14px 16px", borderRadius: 12, border: `2px solid ${error ? "#ef4444" : "#e5e7eb"}`, fontSize: 16, fontFamily: "inherit", outline: "none", color: "#111", boxSizing: "border-box" }}
-            />
-          </div>
-
-          <div style={{ marginBottom: 20 }}>
-            <label style={{ display: "block", fontSize: 13, fontWeight: 600, color: "#555", marginBottom: 8 }}>SHORT BIO</label>
-            <textarea
-              placeholder="Tell people a bit about yourself…"
-              value={profileData.bio}
-              onChange={(e) => setProfileData({ ...profileData, bio: e.target.value })}
-              rows={3}
-              style={{ width: "100%", padding: "14px 16px", borderRadius: 12, border: "2px solid #e5e7eb", fontSize: 15, fontFamily: "inherit", outline: "none", color: "#111", resize: "none", boxSizing: "border-box" }}
-            />
-          </div>
-
-          {error && <p style={{ color: "#ef4444", fontSize: 13, marginBottom: 16 }}>{error}</p>}
-
-          <div style={{ marginBottom: 20, padding: 16, background: "#f0f9ff", borderRadius: 12, border: "1px solid #bae6fd" }}>
-            <p style={{ margin: 0, fontSize: 13, color: "#0c4a6e", lineHeight: 1.5 }}>
-              <strong>🔑 Your Confi ID</strong> will be generated upon profile creation. It serves as your digital identity for NDA signatures and is cryptographically bound to your verified phone number.
-            </p>
-          </div>
-
-          <button
-            onClick={handleProfileSubmit}
-            disabled={loading || !profileData.displayName.trim()}
-            style={{ width: "100%", padding: "16px", borderRadius: 14, border: "none", background: (!profileData.displayName.trim() || loading) ? "#e5e7eb" : "linear-gradient(135deg, #4F46E5, #7C3AED)", color: (!profileData.displayName.trim() || loading) ? "#9ca3af" : "#fff", fontSize: 16, fontWeight: 700, cursor: (!profileData.displayName.trim() || loading) ? "not-allowed" : "pointer" }}
-          >
-            {loading ? "Creating profile…" : "Create Profile"}
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  // ---- RECOVERY SETUP ----
-  if (screen === "recovery-setup") {
-    return (
-      <div style={styles.app}>
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", padding: "48px 28px 32px" }}>
-          <div style={{ marginBottom: 32 }}>
-            <div style={{ width: 56, height: 56, borderRadius: 16, background: "#f0fdf4", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 20 }}>
-              <span style={{ fontSize: 28 }}>🛡️</span>
-            </div>
-            <h2 style={{ fontSize: 26, fontWeight: 800, margin: "0 0 8px", color: "#111" }}>Account Recovery</h2>
-            <p style={{ color: "#666", margin: 0, fontSize: 15, lineHeight: 1.5 }}>Set up recovery options to regain access if you lose your phone.</p>
-          </div>
-
-          {user && (
-            <div style={{ marginBottom: 20, padding: 16, background: "#f8fafc", borderRadius: 12, border: "2px solid #e2e8f0" }}>
-              <p style={{ margin: "0 0 4px", fontSize: 12, fontWeight: 600, color: "#64748b" }}>YOUR CONFI ID</p>
-              <p style={{ margin: 0, fontSize: 14, fontWeight: 700, color: "#4F46E5", fontFamily: "monospace", letterSpacing: 1 }}>{user.confiId}</p>
-              <p style={{ margin: "6px 0 0", fontSize: 12, color: "#94a3b8" }}>Store this safely — it's your permanent identifier for NDA binding.</p>
-            </div>
-          )}
-
-          <div style={{ marginBottom: 20 }}>
-            <label style={{ display: "block", fontSize: 13, fontWeight: 600, color: "#555", marginBottom: 8 }}>RECOVERY EMAIL</label>
-            <input
-              type="email"
-              placeholder="your@email.com"
-              value={recoveryEmail}
-              onChange={(e) => { setRecoveryEmail(e.target.value); setError(""); }}
-              style={{ width: "100%", padding: "14px 16px", borderRadius: 12, border: "2px solid #e5e7eb", fontSize: 16, fontFamily: "inherit", outline: "none", color: "#111", boxSizing: "border-box" }}
-            />
-          </div>
-
-          <div style={{ marginBottom: 24 }}>
-            <label style={{ display: "block", fontSize: 13, fontWeight: 600, color: "#555", marginBottom: 8 }}>RECOVERY PIN (4-8 digits)</label>
-            <input
-              type="password"
-              inputMode="numeric"
-              placeholder="••••"
-              maxLength={8}
-              value={recoveryPin}
-              onChange={(e) => { setRecoveryPin(e.target.value.replace(/\D/g, "")); setError(""); }}
-              style={{ width: "100%", padding: "14px 16px", borderRadius: 12, border: "2px solid #e5e7eb", fontSize: 20, fontFamily: "monospace", outline: "none", color: "#111", boxSizing: "border-box" }}
-            />
-          </div>
-
-          {error && <p style={{ color: "#ef4444", fontSize: 13, marginBottom: 16 }}>{error}</p>}
-
-          <button
-            onClick={handleRecoverySetup}
-            style={{ width: "100%", padding: "16px", borderRadius: 14, border: "none", background: "linear-gradient(135deg, #4F46E5, #7C3AED)", color: "#fff", fontSize: 16, fontWeight: 700, cursor: "pointer", marginBottom: 12 }}
-          >
-            Set Up Recovery
-          </button>
-          <button
-            onClick={() => setScreen("home")}
-            style={{ width: "100%", padding: "14px", borderRadius: 14, border: "2px solid #e5e7eb", background: "#fff", color: "#666", fontSize: 15, fontWeight: 600, cursor: "pointer" }}
-          >
-            Skip for Now
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  // ---- ACCOUNT RECOVERY ----
-  if (screen === "account-recovery") {
-    return (
-      <div style={styles.app}>
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", padding: "48px 28px 32px" }}>
-          <button onClick={() => setScreen("phone-entry")} style={{ background: "none", border: "none", color: "#4F46E5", fontSize: 15, fontWeight: 600, cursor: "pointer", textAlign: "left", padding: 0, marginBottom: 32 }}>
-            ← Back
-          </button>
-
-          <div style={{ marginBottom: 32 }}>
-            <span style={{ fontSize: 40, display: "block", marginBottom: 16 }}>🔓</span>
-            <h2 style={{ fontSize: 26, fontWeight: 800, margin: "0 0 8px", color: "#111" }}>Recover Account</h2>
-            <p style={{ color: "#666", margin: 0, fontSize: 15, lineHeight: 1.5 }}>Enter your recovery details to regain access.</p>
-          </div>
-
-          <div style={{ marginBottom: 20 }}>
-            <label style={{ display: "block", fontSize: 13, fontWeight: 600, color: "#555", marginBottom: 8 }}>RECOVERY EMAIL</label>
-            <input
-              type="email"
-              placeholder="your@email.com"
-              value={recoveryEmail}
-              onChange={(e) => { setRecoveryEmail(e.target.value); setError(""); }}
-              style={{ width: "100%", padding: "14px 16px", borderRadius: 12, border: "2px solid #e5e7eb", fontSize: 16, fontFamily: "inherit", outline: "none", color: "#111", boxSizing: "border-box" }}
-            />
-          </div>
-
-          <div style={{ marginBottom: 24 }}>
-            <label style={{ display: "block", fontSize: 13, fontWeight: 600, color: "#555", marginBottom: 8 }}>RECOVERY PIN</label>
-            <input
-              type="password"
-              inputMode="numeric"
-              placeholder="••••"
-              maxLength={8}
-              value={recoveryPin}
-              onChange={(e) => { setRecoveryPin(e.target.value.replace(/\D/g, "")); setError(""); }}
-              style={{ width: "100%", padding: "14px 16px", borderRadius: 12, border: "2px solid #e5e7eb", fontSize: 20, fontFamily: "monospace", outline: "none", color: "#111", boxSizing: "border-box" }}
-            />
-          </div>
-
-          {error && <p style={{ color: "#ef4444", fontSize: 13, marginBottom: 16 }}>{error}</p>}
-
-          <button
-            onClick={handleAccountRecovery}
-            style={{ width: "100%", padding: "16px", borderRadius: 14, border: "none", background: "linear-gradient(135deg, #4F46E5, #7C3AED)", color: "#fff", fontSize: 16, fontWeight: 700, cursor: "pointer" }}
-          >
-            Recover Account
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  // ---- HOME ----
-  if (screen === "home") {
-    return (
-      <div style={styles.app}>
-        {/* Header */}
-        <div style={{ padding: "52px 20px 12px", background: "#fff", borderBottom: "1px solid #f3f4f6" }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
-            <div>
-              <h1 style={{ margin: 0, fontSize: 24, fontWeight: 800, color: "#111" }}>Confi</h1>
-              <p style={{ margin: 0, fontSize: 12, color: "#9ca3af" }}>{user?.confiId}</p>
-            </div>
-            <button
-              onClick={() => { setEditProfile({ displayName: user?.displayName ?? "", bio: user?.bio ?? "" }); setShowProfile(true); }}
-              style={{ background: "none", border: "none", cursor: "pointer", padding: 4 }}
-            >
-              <img src={user?.avatar} alt="avatar" style={{ width: 40, height: 40, borderRadius: 20, display: "block" }} />
+          </form>
+          <p style={{ textAlign: "center", fontSize: 13, color: "#64748b", marginTop: 16 }}>
+            No account?{" "}
+            <button onClick={() => setStep("signup_email")} style={styles.linkBtn}>
+              Create one
             </button>
-          </div>
-          <div style={{ position: "relative" }}>
-            <input
-              type="text"
-              placeholder="Search messages or contacts…"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              style={{ width: "100%", padding: "11px 16px 11px 40px", borderRadius: 12, border: "none", background: "#f3f4f6", fontSize: 15, fontFamily: "inherit", outline: "none", color: "#111", boxSizing: "border-box" }}
-            />
-            <span style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", color: "#9ca3af", fontSize: 16, pointerEvents: "none" }}>🔍</span>
-          </div>
+          </p>
         </div>
+      </div>
+    );
+  }
 
-        {/* Content */}
-        <div style={{ flex: 1, overflowY: "auto" }}>
-          {searchQuery ? (
-            <div>
-              <p style={{ padding: "12px 20px 4px", fontSize: 12, fontWeight: 600, color: "#9ca3af", margin: 0 }}>CONTACTS</p>
-              {filteredContacts.map((contact) => (
-                <button
-                  key={contact.confiId}
-                  onClick={() => openChat(contact.confiId)}
-                  style={{ width: "100%", padding: "14px 20px", display: "flex", alignItems: "center", gap: 14, background: "none", border: "none", cursor: "pointer", borderBottom: "1px solid #f9fafb", textAlign: "left" }}
-                >
-                  <img src={contact.avatar} alt="" style={{ width: 48, height: 48, borderRadius: 24, flexShrink: 0 }} />
-                  <div>
-                    <p style={{ margin: 0, fontSize: 16, fontWeight: 600, color: "#111" }}>{contact.displayName}</p>
-                    <p style={{ margin: 0, fontSize: 13, color: "#9ca3af" }}>{contact.phone}</p>
-                  </div>
-                </button>
-              ))}
+  // ── Render: Signup — Email ─────────────────────────────────────────────────
+  if (step === "signup_email") {
+    return (
+      <div style={styles.landingContainer}>
+        <div style={styles.landingCard}>
+          <button onClick={() => setStep("landing")} style={styles.backBtn}>← Back</button>
+          <div style={styles.stepIndicator}>Step 1 of 5</div>
+          <h2 style={styles.authTitle}>Your email address</h2>
+          <p style={styles.authSubtitle}>We&apos;ll use this to identify your account.</p>
+          <form onSubmit={handleSignupEmail} style={styles.form}>
+            <div style={styles.fieldGroup}>
+              <label style={styles.label}>Email Address</label>
+              <input
+                style={styles.input} type="email" value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@example.com" required autoFocus
+              />
             </div>
-          ) : conversationList.length === 0 ? (
-            <div style={{ padding: 40, textAlign: "center" }}>
-              <span style={{ fontSize: 56, display: "block", marginBottom: 16 }}>💬</span>
-              <h3 style={{ color: "#111", margin: "0 0 8px" }}>No conversations yet</h3>
-              <p style={{ color: "#9ca3af", fontSize: 14 }}>Search for contacts above to start chatting</p>
-            </div>
-          ) : (
-            conversationList.map(({ contact, messages, confidentialMode }) => {
-              const last = messages[messages.length - 1];
-              return (
-                <button
-                  key={contact.confiId}
-                  onClick={() => openChat(contact.confiId)}
-                  style={{ width: "100%", padding: "14px 20px", display: "flex", alignItems: "center", gap: 14, background: "none", border: "none", cursor: "pointer", borderBottom: "1px solid #f9fafb", textAlign: "left" }}
-                >
-                  <div style={{ position: "relative", flexShrink: 0 }}>
-                    <img src={contact.avatar} alt="" style={{ width: 52, height: 52, borderRadius: 26, display: "block" }} />
-                    {confidentialMode && (
-                      <span style={{ position: "absolute", bottom: -2, right: -2, width: 18, height: 18, borderRadius: 9, background: "#4F46E5", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, border: "2px solid #fff" }}>🔒</span>
-                    )}
-                  </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-                      <p style={{ margin: 0, fontSize: 16, fontWeight: 700, color: "#111" }}>{contact.displayName}</p>
-                      {last && <p style={{ margin: 0, fontSize: 12, color: "#9ca3af" }}>{formatTime(last.ts)}</p>}
-                    </div>
-                    {last && (
-                      <p style={{ margin: 0, fontSize: 14, color: "#6b7280", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                        {last.fromConfiId === "SYSTEM" ? "🔒 " : last.fromConfiId === user?.confiId ? "You: " : ""}
-                        {last.text.replace(/\n.*/s, "")}
-                      </p>
-                    )}
-                  </div>
-                </button>
-              );
-            })
-          )}
+            {authError && <p style={styles.errorText}>{authError}</p>}
+            <button type="submit" style={styles.btnPrimary}>Continue</button>
+          </form>
         </div>
+      </div>
+    );
+  }
 
-        {/* Profile Overlay */}
-        {showProfile && user && (
-          <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", flexDirection: "column", justifyContent: "flex-end", zIndex: 100 }}>
-            <div style={{ background: "#fff", borderRadius: "24px 24px 0 0", padding: "24px 24px 40px", maxHeight: "80vh", overflowY: "auto" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
-                <h3 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: "#111" }}>My Profile</h3>
-                <button onClick={() => { setShowProfile(false); setEditingProfile(false); }} style={{ background: "none", border: "none", fontSize: 24, cursor: "pointer", color: "#666" }}>×</button>
-              </div>
-
-              <div style={{ textAlign: "center", marginBottom: 24 }}>
-                <img src={user.avatar} alt="" style={{ width: 80, height: 80, borderRadius: 40, margin: "0 auto 12px", display: "block" }} />
-                {!editingProfile ? (
-                  <>
-                    <h2 style={{ margin: "0 0 4px", fontSize: 22, fontWeight: 800, color: "#111" }}>{user.displayName}</h2>
-                    <p style={{ margin: "0 0 8px", fontSize: 14, color: "#6b7280" }}>{user.bio || "No bio yet"}</p>
-                    <p style={{ margin: 0, fontSize: 12, color: "#9ca3af" }}>{user.phone}</p>
-                  </>
-                ) : (
-                  <>
-                    <input value={editProfile.displayName} onChange={(e) => setEditProfile({ ...editProfile, displayName: e.target.value })} style={{ width: "100%", padding: "12px 16px", borderRadius: 10, border: "2px solid #e5e7eb", fontSize: 16, marginBottom: 10, textAlign: "center", fontFamily: "inherit", outline: "none", boxSizing: "border-box" }} />
-                    <textarea value={editProfile.bio} onChange={(e) => setEditProfile({ ...editProfile, bio: e.target.value })} rows={2} placeholder="Short bio…" style={{ width: "100%", padding: "12px 16px", borderRadius: 10, border: "2px solid #e5e7eb", fontSize: 14, fontFamily: "inherit", resize: "none", outline: "none", boxSizing: "border-box" }} />
-                  </>
-                )}
-              </div>
-
-              <div style={{ padding: 16, background: "#f8fafc", borderRadius: 12, marginBottom: 20, border: "1px solid #e2e8f0" }}>
-                <p style={{ margin: "0 0 4px", fontSize: 11, fontWeight: 700, color: "#64748b", letterSpacing: 1 }}>YOUR CONFI ID</p>
-                <p style={{ margin: 0, fontFamily: "monospace", fontSize: 15, fontWeight: 700, color: "#4F46E5", letterSpacing: 1 }}>{user.confiId}</p>
-                <p style={{ margin: "6px 0 0", fontSize: 11, color: "#94a3b8" }}>NDA Signature Identifier · Cryptographically bound to {user.phone}</p>
-              </div>
-
-              {!editingProfile ? (
-                <button onClick={() => { setEditingProfile(true); setEditProfile({ displayName: user.displayName, bio: user.bio }); }} style={{ width: "100%", padding: 14, borderRadius: 12, border: "2px solid #4F46E5", background: "#fff", color: "#4F46E5", fontSize: 15, fontWeight: 700, cursor: "pointer", marginBottom: 12 }}>
-                  Edit Profile
-                </button>
-              ) : (
-                <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
-                  <button onClick={() => setEditingProfile(false)} style={{ flex: 1, padding: 14, borderRadius: 12, border: "2px solid #e5e7eb", background: "#fff", color: "#666", fontSize: 15, fontWeight: 600, cursor: "pointer" }}>Cancel</button>
-                  <button onClick={saveProfileEdit} style={{ flex: 1, padding: 14, borderRadius: 12, border: "none", background: "linear-gradient(135deg, #4F46E5, #7C3AED)", color: "#fff", fontSize: 15, fontWeight: 700, cursor: "pointer" }}>Save</button>
-                </div>
-              )}
-
-              <button onClick={handleLogout} style={{ width: "100%", padding: 14, borderRadius: 12, border: "none", background: "#fee2e2", color: "#dc2626", fontSize: 15, fontWeight: 700, cursor: "pointer" }}>
-                Sign Out
-              </button>
+  // ── Render: Signup — Phone ─────────────────────────────────────────────────
+  if (step === "signup_phone") {
+    return (
+      <div style={styles.landingContainer}>
+        <div style={styles.landingCard}>
+          <button onClick={() => setStep("signup_email")} style={styles.backBtn}>← Back</button>
+          <div style={styles.stepIndicator}>Step 2 of 5</div>
+          <h2 style={styles.authTitle}>Phone verification</h2>
+          <p style={styles.authSubtitle}>
+            Enter your phone number to receive a one-time code.
+          </p>
+          <form onSubmit={handleSignupPhone} style={styles.form}>
+            <div style={styles.fieldGroup}>
+              <label style={styles.label}>Phone Number</label>
+              <input
+                style={styles.input} type="tel" value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                placeholder="+1 555 000 0000" required autoFocus
+              />
+              <span style={{ fontSize: 11, color: "#94a3b8", marginTop: 4 }}>
+                Include country code (e.g. +1, +44, +91)
+              </span>
             </div>
+            {authError && <p style={styles.errorText}>{authError}</p>}
+            <button type="submit" style={styles.btnPrimary}>Send OTP</button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Render: Signup — OTP ───────────────────────────────────────────────────
+  if (step === "signup_otp") {
+    return (
+      <div style={styles.landingContainer}>
+        <div style={styles.landingCard}>
+          <button onClick={() => setStep("signup_phone")} style={styles.backBtn}>← Back</button>
+          <div style={styles.stepIndicator}>Step 2 of 5</div>
+          <h2 style={styles.authTitle}>Enter OTP</h2>
+          <p style={styles.authSubtitle}>
+            A 6-digit code was sent to <strong>{phone}</strong>
+          </p>
+          <form onSubmit={handleVerifyOtp} style={styles.form}>
+            <div style={styles.fieldGroup}>
+              <label style={styles.label}>6-Digit Code</label>
+              <input
+                style={{ ...styles.input, letterSpacing: 8, fontSize: 22, textAlign: "center" }}
+                type="text" inputMode="numeric" maxLength={6}
+                value={otp} onChange={(e) => setOtp(e.target.value.replace(/\D/g, ""))}
+                placeholder="------" required autoFocus
+              />
+            </div>
+            {authError && <p style={styles.errorText}>{authError}</p>}
+            <button type="submit" style={styles.btnPrimary}>Verify</button>
+            <button
+              type="button"
+              onClick={() => {
+                const code = generateOTP();
+                setGeneratedOtp(code);
+                setOtp("");
+                alert(`[Demo] New OTP: ${code}`);
+              }}
+              style={styles.linkBtn}
+            >
+              Resend OTP
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Render: Signup — Password ──────────────────────────────────────────────
+  if (step === "signup_password") {
+    return (
+      <div style={styles.landingContainer}>
+        <div style={styles.landingCard}>
+          <button onClick={() => setStep("signup_otp")} style={styles.backBtn}>← Back</button>
+          <div style={styles.stepIndicator}>Step 3 of 5</div>
+          <h2 style={styles.authTitle}>Create a password</h2>
+          <p style={styles.authSubtitle}>Minimum 8 characters. Make it strong.</p>
+          <form onSubmit={handleSetPassword} style={styles.form}>
+            <div style={styles.fieldGroup}>
+              <label style={styles.label}>Password</label>
+              <input
+                style={styles.input} type="password" value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••" required autoFocus
+              />
+            </div>
+            <div style={styles.fieldGroup}>
+              <label style={styles.label}>Confirm Password</label>
+              <input
+                style={styles.input} type="password" value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                placeholder="••••••••" required
+              />
+            </div>
+            {authError && <p style={styles.errorText}>{authError}</p>}
+            <button type="submit" style={styles.btnPrimary}>Continue</button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Render: Signup — Legal Name ────────────────────────────────────────────
+  if (step === "signup_legalname") {
+    return (
+      <div style={styles.landingContainer}>
+        <div style={styles.landingCard}>
+          <button onClick={() => setStep("signup_password")} style={styles.backBtn}>← Back</button>
+          <div style={styles.stepIndicator}>Step 4 of 5</div>
+          <div style={{ textAlign: "center", marginBottom: 16 }}>
+            <ShieldIcon size={40} color="#6C63FF" />
           </div>
+          <h2 style={styles.authTitle}>Identity Verification</h2>
+          <p style={styles.authSubtitle}>
+            Your legal name is required for NDA activation. It will be legally binding on any
+            Non-Disclosure Agreement you activate on Confi.
+          </p>
+          <div style={{
+            background: "#fef9c3", border: "1px solid #fde047", borderRadius: 8,
+            padding: "10px 14px", marginBottom: 16, fontSize: 12, color: "#713f12",
+          }}>
+            ⚠️ Enter your name <strong>exactly as it appears on your government-issued ID</strong>.
+            This name will be used in legally binding international NDAs.
+          </div>
+          <form onSubmit={handleLegalName} style={styles.form}>
+            <div style={styles.fieldGroup}>
+              <label style={styles.label}>Legal First Name</label>
+              <input
+                style={styles.input} type="text" value={legalFirstName}
+                onChange={(e) => setLegalFirstName(e.target.value)}
+                placeholder="As on your ID" required autoFocus
+              />
+            </div>
+            <div style={styles.fieldGroup}>
+              <label style={styles.label}>Legal Last Name</label>
+              <input
+                style={styles.input} type="text" value={legalLastName}
+                onChange={(e) => setLegalLastName(e.target.value)}
+                placeholder="As on your ID" required
+              />
+            </div>
+            <label style={{
+              display: "flex", alignItems: "flex-start", gap: 8,
+              fontSize: 12, color: "#475569", marginBottom: 12, cursor: "pointer",
+            }}>
+              <input type="checkbox" required style={{ marginTop: 2 }} />
+              <span>
+                I confirm that the name above matches my government-issued identification and
+                I understand it will be used in legally binding NDAs on this platform.
+              </span>
+            </label>
+            {authError && <p style={styles.errorText}>{authError}</p>}
+            <button type="submit" style={styles.btnPrimary}>Verify &amp; Continue</button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Render: Signup — Profile ───────────────────────────────────────────────
+  if (step === "signup_profile") {
+    return (
+      <div style={styles.landingContainer}>
+        <div style={styles.landingCard}>
+          <button onClick={() => setStep("signup_legalname")} style={styles.backBtn}>← Back</button>
+          <div style={styles.stepIndicator}>Step 5 of 5</div>
+          <h2 style={styles.authTitle}>Set up your profile</h2>
+          <p style={styles.authSubtitle}>
+            Your display name is what others see. It can be a nickname — your legal name stays private.
+          </p>
+          <div style={{ textAlign: "center", marginBottom: 16 }}>
+            <Avatar name={displayName || "?"} color={avatarColor} size={72} />
+          </div>
+          <form onSubmit={handleCreateProfile} style={styles.form}>
+            <div style={styles.fieldGroup}>
+              <label style={styles.label}>Display Name</label>
+              <input
+                style={styles.input} type="text" value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                placeholder="Nickname or full name" required autoFocus maxLength={40}
+              />
+            </div>
+            <div style={styles.fieldGroup}>
+              <label style={styles.label}>Avatar Color</label>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {AVATAR_COLORS.map((c) => (
+                  <button
+                    key={c} type="button" onClick={() => setAvatarColor(c)}
+                    style={{
+                      width: 32, height: 32, borderRadius: "50%", background: c,
+                      border: avatarColor === c ? "3px solid #1e293b" : "3px solid transparent",
+                      cursor: "pointer", padding: 0,
+                    }}
+                  />
+                ))}
+              </div>
+            </div>
+            {authError && <p style={styles.errorText}>{authError}</p>}
+            <button type="submit" disabled={authLoading} style={styles.btnPrimary}>
+              {authLoading ? "Creating account…" : "Create Account"}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Render: App ────────────────────────────────────────────────────────────
+  if (step === "app" && user) {
+    return (
+      <div style={styles.appContainer}>
+        {/* NDA Modal */}
+        {showNDA && activeConv && (
+          <NDAModal
+            user={user}
+            conversation={activeConv}
+            onAccept={handleNDAAccept}
+            onDecline={() => setShowNDA(false)}
+          />
         )}
 
-        {/* Toast */}
-        {toast && (
-          <div style={{ position: "absolute", bottom: 24, left: "50%", transform: "translateX(-50%)", background: "#111", color: "#fff", padding: "12px 20px", borderRadius: 100, fontSize: 14, fontWeight: 600, whiteSpace: "nowrap", zIndex: 200, boxShadow: "0 4px 20px rgba(0,0,0,0.3)" }}>
-            {toast}
-          </div>
+        {/* Profile Modal */}
+        {showProfile && (
+          <ProfileModal
+            user={user}
+            onClose={() => setShowProfile(false)}
+            onUpdate={(updates) => {
+              const updated = { ...user, ...updates };
+              setUser(updated);
+              persistUser(updated);
+            }}
+          />
         )}
-      </div>
-    );
-  }
 
-  // ---- CHAT ----
-  if (screen === "chat" && activeConvo) {
-    const convo = conversations.get(activeConvo);
-    if (!convo) return null;
-    const { contact, messages: msgs, confidentialMode } = convo;
-
-    return (
-      <div style={styles.app}>
-        {/* Chat Header */}
-        <div style={{ padding: "52px 16px 12px", background: confidentialMode ? "linear-gradient(135deg, #1e1b4b, #312e81)" : "#fff", borderBottom: "1px solid #f3f4f6" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <button onClick={() => setScreen("home")} style={{ background: "none", border: "none", color: confidentialMode ? "#fff" : "#4F46E5", fontSize: 22, cursor: "pointer", padding: 4 }}>←</button>
-            <img src={contact.avatar} alt="" style={{ width: 40, height: 40, borderRadius: 20, border: confidentialMode ? "2px solid #818cf8" : "none" }} />
+        {/* Sidebar */}
+        <div style={styles.sidebar}>
+          {/* Sidebar Header */}
+          <div style={styles.sidebarHeader}>
+            <button onClick={() => setShowProfile(true)} style={{ background: "none", border: "none", cursor: "pointer", padding: 0 }}>
+              <Avatar name={user.displayName} color={user.avatarColor} size={40} />
+            </button>
             <div style={{ flex: 1 }}>
-              <p style={{ margin: 0, fontSize: 16, fontWeight: 700, color: confidentialMode ? "#fff" : "#111" }}>{contact.displayName}</p>
-              <p style={{ margin: 0, fontSize: 12, color: confidentialMode ? "#a5b4fc" : "#9ca3af" }}>
-                {confidentialMode ? "🔒 Confidential — NDA Active" : `Last seen ${formatDate(contact.lastSeen)}`}
+              <p style={{ margin: 0, fontWeight: 700, fontSize: 14, color: "#1e293b" }}>
+                {user.displayName}
+              </p>
+              <p style={{ margin: 0, fontSize: 11, color: user.legalNameVerified ? "#22c55e" : "#f59e0b" }}>
+                {user.legalNameVerified ? "✓ Identity Verified" : "⚠ Not Verified"}
               </p>
             </div>
             <button
-              onClick={() => confidentialMode ? disableConfidentialMode(activeConvo) : requestConfidentialMode(activeConvo)}
-              style={{ padding: "8px 14px", borderRadius: 20, border: "none", background: confidentialMode ? "rgba(255,255,255,0.2)" : "#f0f0ff", color: confidentialMode ? "#fff" : "#4F46E5", fontSize: 13, fontWeight: 700, cursor: "pointer", backdropFilter: "blur(4px)" }}
+              onClick={() => setShowNewConv(true)}
+              style={{
+                background: "#6C63FF", border: "none", borderRadius: "50%",
+                width: 36, height: 36, display: "flex", alignItems: "center",
+                justifyContent: "center", cursor: "pointer", color: "#fff", fontSize: 22,
+              }}
+              title="New conversation"
             >
-              {confidentialMode ? "🔒 ON" : "🔓 Confi"}
+              +
             </button>
           </div>
-        </div>
 
-        {/* Messages */}
-        <div style={{ flex: 1, overflowY: "auto", padding: "16px", display: "flex", flexDirection: "column", gap: 8, background: confidentialMode ? "#0f0e24" : "#f9fafb" }}>
-          {msgs.map((msg) => {
-            const isMe = msg.fromConfiId === user?.confiId;
-            const isSystem = msg.fromConfiId === "SYSTEM";
-
-            if (isSystem) {
-              return (
-                <div key={msg.id} style={{ textAlign: "center", padding: "8px 16px" }}>
-                  <div style={{ display: "inline-block", padding: "8px 16px", borderRadius: 12, background: confidentialMode ? "rgba(79,70,229,0.3)" : "#e0e7ff", border: `1px solid ${confidentialMode ? "#4F46E5" : "#c7d2fe"}` }}>
-                    <p style={{ margin: 0, fontSize: 12, color: confidentialMode ? "#a5b4fc" : "#4F46E5", fontWeight: 600, lineHeight: 1.5, whiteSpace: "pre-line" }}>{msg.text}</p>
-                  </div>
-                </div>
-              );
-            }
-
-            return (
-              <div key={msg.id} style={{ display: "flex", justifyContent: isMe ? "flex-end" : "flex-start" }}>
-                {!isMe && <img src={contact.avatar} alt="" style={{ width: 28, height: 28, borderRadius: 14, marginRight: 8, flexShrink: 0, alignSelf: "flex-end" }} />}
-                <div style={{ maxWidth: "72%" }}>
-                  {msg.confidential && (
-                    <p style={{ margin: "0 0 2px", fontSize: 10, color: confidentialMode ? "#818cf8" : "#6366f1", fontWeight: 600, textAlign: isMe ? "right" : "left" }}>🔒 CONFIDENTIAL</p>
-                  )}
-                  <div style={{
-                    padding: "10px 14px",
-                    borderRadius: isMe ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
-                    background: isMe
-                      ? confidentialMode ? "linear-gradient(135deg, #4338ca, #6d28d9)" : "linear-gradient(135deg, #4F46E5, #7C3AED)"
-                      : confidentialMode ? "rgba(255,255,255,0.1)" : "#fff",
-                    boxShadow: "0 1px 4px rgba(0,0,0,0.08)",
-                    border: !isMe && confidentialMode ? "1px solid rgba(255,255,255,0.15)" : "none",
-                  }}>
-                    <p style={{ margin: "0 0 4px", fontSize: 15, color: isMe ? "#fff" : confidentialMode ? "#e2e8f0" : "#111", lineHeight: 1.4 }}>{msg.text}</p>
-                    <p style={{ margin: 0, fontSize: 11, color: isMe ? "rgba(255,255,255,0.7)" : confidentialMode ? "rgba(255,255,255,0.4)" : "#9ca3af", textAlign: "right" }}>{formatTime(msg.ts)}</p>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-          <div ref={messagesEndRef} />
-        </div>
-
-        {/* Input */}
-        <div style={{ padding: "12px 16px 32px", background: confidentialMode ? "#0f0e24" : "#fff", borderTop: `1px solid ${confidentialMode ? "rgba(255,255,255,0.1)" : "#f3f4f6"}` }}>
-          {confidentialMode && (
-            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10, padding: "6px 12px", background: "rgba(79,70,229,0.2)", borderRadius: 8 }}>
-              <span style={{ fontSize: 12 }}>🔒</span>
-              <p style={{ margin: 0, fontSize: 11, color: "#a5b4fc", fontWeight: 600 }}>Protected by International NDA · All messages encrypted & confidential</p>
-            </div>
-          )}
-          <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
+          {/* Search */}
+          <div style={{ padding: "0 12px 12px" }}>
             <input
-              type="text"
-              placeholder={confidentialMode ? "🔒 Send confidential message…" : "Message…"}
-              value={messageInput}
-              onChange={(e) => setMessageInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && sendMessage()}
-              style={{ flex: 1, padding: "12px 16px", borderRadius: 24, border: `2px solid ${confidentialMode ? "rgba(79,70,229,0.4)" : "#e5e7eb"}`, fontSize: 15, fontFamily: "inherit", outline: "none", color: confidentialMode ? "#fff" : "#111", background: confidentialMode ? "rgba(255,255,255,0.08)" : "#fff", caretColor: confidentialMode ? "#818cf8" : "#4F46E5" }}
+              style={{ ...styles.input, margin: 0 }}
+              placeholder="🔍 Search conversations…"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
             />
-            <button
-              onClick={sendMessage}
-              disabled={!messageInput.trim()}
-              style={{ width: 44, height: 44, borderRadius: 22, border: "none", background: messageInput.trim() ? "linear-gradient(135deg, #4F46E5, #7C3AED)" : "#e5e7eb", color: "#fff", fontSize: 18, cursor: messageInput.trim() ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}
-            >
-              ↑
-            </button>
           </div>
-        </div>
 
-        {/* NDA Modal */}
-        {showNDA && (
-          <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.7)", display: "flex", alignItems: "flex-end", zIndex: 200, backdropFilter: "blur(4px)" }}>
-            <div style={{ background: "#fff", borderRadius: "24px 24px 0 0", width: "100%", maxHeight: "90vh", display: "flex", flexDirection: "column" }}>
-              <div style={{ padding: "20px 24px 0" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-                  <div>
-                    <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: "#111" }}>🔒 International NDA</h3>
-                    <p style={{ margin: "4px 0 0", fontSize: 13, color: "#6b7280" }}>Review and sign to enable Confidential Mode</p>
+          {/* New Conversation Form */}
+          {showNewConv && (
+            <form onSubmit={handleNewConversation} style={{ padding: "0 12px 12px", display: "flex", gap: 8 }}>
+              <input
+                style={{ ...styles.input, margin: 0, flex: 1 }}
+                placeholder="Contact email…"
+                value={newConvEmail}
+                onChange={(e) => setNewConvEmail(e.target.value)}
+                type="email"
+                autoFocus
+              />
+              <button type="submit" style={{ ...styles.btnPrimary, padding: "8px 12px" }}>Go</button>
+              <button type="button" onClick={() => setShowNewConv(false)} style={{ ...styles.btnSecondary, padding: "8px 10px" }}>✕</button>
+            </form>
+          )}
+
+          {/* Conversation List */}
+          <div style={{ flex: 1, overflowY: "auto" }}>
+            {filteredConvs.length === 0 && (
+              <p style={{ textAlign: "center", color: "#94a3b8", fontSize: 13, padding: 20 }}>
+                No conversations yet. Hit + to start one.
+              </p>
+            )}
+            {filteredConvs.map((conv) => {
+              const lastMsg = conv.messages[conv.messages.length - 1];
+              const isActive = conv.id === activeConvId;
+              return (
+                <button
+                  key={conv.id}
+                  onClick={() => setActiveConvId(conv.id)}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 12,
+                    padding: "12px 16px", width: "100%", border: "none",
+                    background: isActive ? "#ede9fe" : "transparent",
+                    cursor: "pointer", textAlign: "left",
+                    borderLeft: isActive ? "3px solid #6C63FF" : "3px solid transparent",
+                    transition: "background 0.1s",
+                  }}
+                >
+                  <div style={{ position: "relative" }}>
+                    <Avatar name={conv.participantName} color={conv.participantAvatarColor} size={44} />
+                    {conv.confidentialMode && (
+                      <div style={{
+                        position: "absolute", bottom: -2, right: -2,
+                        background: "#6C63FF", borderRadius: "50%",
+                        width: 16, height: 16, display: "flex", alignItems: "center",
+                        justifyContent: "center", border: "2px solid #fff",
+                      }}>
+                        <LockIcon size={9} color="#fff" />
+                      </div>
+                    )}
                   </div>
-                  <button onClick={() => { setShowNDA(false); setNdaConvoId(null); }} style={{ background: "none", border: "none", fontSize: 24, cursor: "pointer", color: "#666" }}>×</button>
-                </div>
-
-                {user && (
-                  <div style={{ padding: "10px 14px", background: "#f0f9ff", borderRadius: 10, marginBottom: 12, border: "1px solid #bae6fd" }}>
-                    <p style={{ margin: 0, fontSize: 12, color: "#0369a1" }}>
-                      <strong>Signing as:</strong> {user.displayName} · <span style={{ fontFamily: "monospace" }}>{user.confiId}</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <p style={{ margin: 0, fontWeight: 600, fontSize: 14, color: "#1e293b" }}>
+                        {conv.participantName}
+                      </p>
+                      {lastMsg && (
+                        <span style={{ fontSize: 10, color: "#94a3b8" }}>
+                          {formatTime(lastMsg.timestamp)}
+                        </span>
+                      )}
+                    </div>
+                    <p style={{
+                      margin: 0, fontSize: 12, color: "#64748b",
+                      whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                    }}>
+                      {conv.confidentialMode && <LockIcon size={10} color="#6C63FF" />}{" "}
+                      {lastMsg ? lastMsg.text : "No messages yet"}
                     </p>
                   </div>
-                )}
-              </div>
+                </button>
+              );
+            })}
+          </div>
 
-              <div style={{ flex: 1, overflowY: "auto", padding: "0 24px" }}>
-                <div style={{ background: "#f8fafc", borderRadius: 12, padding: 16, border: "1px solid #e2e8f0" }}>
-                  <pre style={{ margin: 0, fontSize: 12, color: "#374151", lineHeight: 1.7, fontFamily: "inherit", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{NDA_TEXT}</pre>
-                </div>
-              </div>
+          {/* Sidebar Footer */}
+          <div style={{ padding: 12, borderTop: "1px solid #e2e8f0" }}>
+            <button onClick={handleLogout} style={{
+              width: "100%", padding: "8px", background: "none", border: "1px solid #e2e8f0",
+              borderRadius: 8, cursor: "pointer", fontSize: 13, color: "#64748b",
+            }}>
+              Sign Out
+            </button>
+          </div>
+        </div>
 
-              <div style={{ padding: "16px 24px 36px" }}>
-                <div style={{ padding: "12px 16px", background: "#fef3c7", borderRadius: 10, marginBottom: 16, border: "1px solid #fde68a" }}>
-                  <p style={{ margin: 0, fontSize: 12, color: "#92400e", lineHeight: 1.5 }}>
-                    ⚖️ <strong>Legal Notice:</strong> By accepting, you create a binding electronic signature under ESIGN, eIDAS, and international commercial law, linked to your Confi ID and verified phone number.
+        {/* Main Chat Area */}
+        <div style={styles.chatArea}>
+          {!activeConv ? (
+            <div style={{
+              flex: 1, display: "flex", flexDirection: "column",
+              alignItems: "center", justifyContent: "center", gap: 12,
+            }}>
+              <div style={{
+                width: 80, height: 80, borderRadius: "50%",
+                background: "linear-gradient(135deg,#6C63FF22,#a855f722)",
+                display: "flex", alignItems: "center", justifyContent: "center",
+              }}>
+                <LockIcon size={36} color="#6C63FF" />
+              </div>
+              <h2 style={{ margin: 0, color: "#1e293b" }}>Confi Messaging</h2>
+              <p style={{ margin: 0, color: "#94a3b8", fontSize: 14, textAlign: "center", maxWidth: 300 }}>
+                Select a conversation or start a new one. Activate Confidential Mode to bind both
+                parties to an international NDA.
+              </p>
+              <button onClick={() => setShowNewConv(true)} style={styles.btnPrimary}>
+                + Start a Conversation
+              </button>
+            </div>
+          ) : (
+            <>
+              {/* Chat Header */}
+              <div style={styles.chatHeader}>
+                <Avatar
+                  name={activeConv.participantName}
+                  color={activeConv.participantAvatarColor}
+                  size={40}
+                />
+                <div style={{ flex: 1 }}>
+                  <p style={{ margin: 0, fontWeight: 700, fontSize: 15, color: "#1e293b" }}>
+                    {activeConv.participantName}
+                  </p>
+                  <p style={{ margin: 0, fontSize: 11, color: "#94a3b8" }}>
+                    {activeConv.participantEmail}
                   </p>
                 </div>
-                <button
-                  onClick={acceptNDA}
-                  style={{ width: "100%", padding: "16px", borderRadius: 14, border: "none", background: "linear-gradient(135deg, #4F46E5, #7C3AED)", color: "#fff", fontSize: 16, fontWeight: 700, cursor: "pointer" }}
-                >
-                  Accept & Enable Confidential Mode
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
 
-        {/* Toast */}
-        {toast && (
-          <div style={{ position: "absolute", bottom: 90, left: "50%", transform: "translateX(-50%)", background: "#111", color: "#fff", padding: "12px 20px", borderRadius: 100, fontSize: 14, fontWeight: 600, whiteSpace: "nowrap", zIndex: 300, boxShadow: "0 4px 20px rgba(0,0,0,0.3)" }}>
-            {toast}
-          </div>
-        )}
+                {/* Confidential Toggle */}
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  {activeConv.confidentialMode && (
+                    <div style={{
+                      background: "#ede9fe", borderRadius: 20, padding: "4px 10px",
+                      display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: "#6C63FF",
+                    }}>
+                      <ShieldIcon size={12} color="#6C63FF" />
+                      <span>NDA Active</span>
+                    </div>
+                  )}
+                  <button
+                    onClick={handleToggleConfidential}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 6,
+                      padding: "8px 14px", border: "none", borderRadius: 20, cursor: "pointer",
+                      background: activeConv.confidentialMode ? "#6C63FF" : "#f1f5f9",
+                      color: activeConv.confidentialMode ? "#fff" : "#475569",
+                      fontSize: 13, fontWeight: 600, transition: "all 0.2s",
+                    }}
+                  >
+                    <LockIcon size={13} color={activeConv.confidentialMode ? "#fff" : "#475569"} />
+                    {activeConv.confidentialMode ? "Confidential ON" : "Confidential OFF"}
+                  </button>
+                </div>
+              </div>
+
+              {/* NDA Banner */}
+              {activeConv.confidentialMode && activeConv.ndaActivatedAt && (
+                <div style={{
+                  background: "linear-gradient(90deg,#ede9fe,#e0e7ff)",
+                  padding: "8px 20px",
+                  display: "flex", alignItems: "center", gap: 8,
+                  fontSize: 12, color: "#4338ca", borderBottom: "1px solid #c7d2fe",
+                }}>
+                  <ShieldIcon size={14} color="#4338ca" />
+                  <span>
+                    <strong>International NDA Active</strong> — All messages in this conversation
+                    are covered by a mutual NDA signed by both parties.
+                    Activated {formatDate(activeConv.ndaActivatedAt)}.
+                  </span>
+                </div>
+              )}
+
+              {/* Messages */}
+              <div style={styles.messageList}>
+                {activeConv.messages.length === 0 && (
+                  <div style={{ textAlign: "center", color: "#94a3b8", fontSize: 13, paddingTop: 40 }}>
+                    No messages yet. Say hello!
+                    {activeConv.confidentialMode && (
+                      <p style={{ color: "#6C63FF", marginTop: 8 }}>
+                        🔒 This conversation is protected by NDA
+                      </p>
+                    )}
+                  </div>
+                )}
+                {activeConv.messages.map((msg) => {
+                  const isOwn = msg.senderId === user.email;
+                  return (
+                    <div
+                      key={msg.id}
+                      style={{
+                        display: "flex",
+                        flexDirection: isOwn ? "row-reverse" : "row",
+                        alignItems: "flex-end", gap: 8, marginBottom: 12,
+                      }}
+                    >
+                      {!isOwn && (
+                        <Avatar name={msg.senderName} color={activeConv.participantAvatarColor} size={30} />
+                      )}
+                      <div style={{
+                        maxWidth: "65%",
+                        background: isOwn
+                          ? (msg.isConfidential ? "linear-gradient(135deg,#6C63FF,#a855f7)" : "#6C63FF")
+                          : (msg.isConfidential ? "#ede9fe" : "#f1f5f9"),
+                        color: isOwn ? "#fff" : "#1e293b",
+                        borderRadius: isOwn ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
+                        padding: "10px 14px",
+                        boxShadow: "0 1px 2px rgba(0,0,0,0.08)",
+                      }}>
+                        {msg.isConfidential && (
+                          <div style={{
+                            display: "flex", alignItems: "center", gap: 4,
+                            fontSize: 10, opacity: 0.8, marginBottom: 4,
+                          }}>
+                            <LockIcon size={9} color={isOwn ? "#fff" : "#6C63FF"} />
+                            <span>Confidential</span>
+                          </div>
+                        )}
+                        <p style={{ margin: 0, fontSize: 14, lineHeight: 1.5 }}>{msg.text}</p>
+                        <p style={{
+                          margin: "4px 0 0", fontSize: 10,
+                          opacity: 0.7, textAlign: "right",
+                        }}>
+                          {formatTime(msg.timestamp)}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })}
+                <div ref={messagesEndRef} />
+              </div>
+
+              {/* Message Input */}
+              <form onSubmit={handleSendMessage} style={styles.inputBar}>
+                {activeConv.confidentialMode && (
+                  <LockIcon size={16} color="#6C63FF" />
+                )}
+                <input
+                  style={{
+                    flex: 1, border: "1px solid #e2e8f0", borderRadius: 24,
+                    padding: "10px 16px", fontSize: 14, outline: "none",
+                    background: activeConv.confidentialMode ? "#faf5ff" : "#fff",
+                  }}
+                  placeholder={
+                    activeConv.confidentialMode
+                      ? "🔒 Confidential message (NDA protected)…"
+                      : "Type a message…"
+                  }
+                  value={messageText}
+                  onChange={(e) => setMessageText(e.target.value)}
+                />
+                <button
+                  type="submit"
+                  disabled={!messageText.trim()}
+                  style={{
+                    background: messageText.trim() ? "#6C63FF" : "#e2e8f0",
+                    border: "none", borderRadius: "50%", width: 44, height: 44,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    cursor: messageText.trim() ? "pointer" : "not-allowed",
+                    transition: "background 0.2s",
+                  }}
+                >
+                  <svg width={18} height={18} viewBox="0 0 24 24" fill={messageText.trim() ? "#fff" : "#94a3b8"}>
+                    <path d="M2 21l21-9L2 3v7l15 2-15 2v7z" />
+                  </svg>
+                </button>
+              </form>
+            </>
+          )}
+        </div>
       </div>
     );
   }
 
   return null;
 }
+
+// ─── Styles ───────────────────────────────────────────────────────────────────
+const styles: Record<string, React.CSSProperties> = {
+  landingContainer: {
+    minHeight: "100vh",
+    background: "linear-gradient(135deg,#f8f7ff 0%,#ede9fe 50%,#e0e7ff 100%)",
+    display: "flex", alignItems: "center", justifyContent: "center",
+    padding: 20,
+  },
+  landingCard: {
+    background: "#fff", borderRadius: 20, padding: "36px 32px",
+    width: "100%", maxWidth: 420,
+    boxShadow: "0 20px 60px rgba(108,99,255,0.15)",
+  },
+  authTitle: {
+    margin: "0 0 6px", fontSize: 24, fontWeight: 800, color: "#1e293b",
+  },
+  authSubtitle: {
+    margin: "0 0 24px", fontSize: 14, color: "#64748b", lineHeight: 1.6,
+  },
+  stepIndicator: {
+    display: "inline-block", background: "#ede9fe", color: "#6C63FF",
+    fontSize: 11, fontWeight: 700, borderRadius: 20, padding: "3px 10px",
+    marginBottom: 12,
+  },
+  backBtn: {
+    background: "none", border: "none", cursor: "pointer",
+    color: "#6C63FF", fontSize: 13, fontWeight: 600, padding: 0, marginBottom: 16,
+  },
+  form: {
+    display: "flex", flexDirection: "column", gap: 0,
+  },
+  fieldGroup: {
+    display: "flex", flexDirection: "column", gap: 4, marginBottom: 16,
+  },
+  label: {
+    fontSize: 13, fontWeight: 600, color: "#374151",
+  },
+  input: {
+    padding: "10px 14px", border: "1px solid #e2e8f0", borderRadius: 10,
+    fontSize: 14, outline: "none", transition: "border-color 0.2s",
+    color: "#1e293b", background: "#fff",
+    marginBottom: 0,
+  },
+  btnPrimary: {
+    display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+    padding: "11px 20px", background: "#6C63FF", color: "#fff",
+    border: "none", borderRadius: 10, fontSize: 14, fontWeight: 700,
+    cursor: "pointer", width: "100%", marginBottom: 8,
+    transition: "background 0.2s",
+  },
+  btnSecondary: {
+    display: "flex", alignItems: "center", justifyContent: "center",
+    padding: "11px 20px", background: "#f1f5f9", color: "#475569",
+    border: "1px solid #e2e8f0", borderRadius: 10, fontSize: 14, fontWeight: 600,
+    cursor: "pointer", width: "100%", marginBottom: 8,
+  },
+  linkBtn: {
+    background: "none", border: "none", cursor: "pointer",
+    color: "#6C63FF", fontSize: 13, fontWeight: 600, padding: "4px 0",
+    display: "block", width: "100%", textAlign: "center",
+  },
+  errorText: {
+    color: "#FC5C65", fontSize: 13, margin: "0 0 10px",
+    background: "#fff1f2", padding: "8px 12px", borderRadius: 8, borderLeft: "3px solid #FC5C65",
+  },
+  modalOverlay: {
+    position: "fixed", inset: 0, background: "rgba(15,23,42,0.6)",
+    display: "flex", alignItems: "center", justifyContent: "center",
+    zIndex: 1000, padding: 20, backdropFilter: "blur(4px)",
+  },
+  modalBox: {
+    background: "#fff", borderRadius: 20, padding: "28px 32px",
+    width: "100%", maxHeight: "90vh", overflowY: "auto",
+    boxShadow: "0 24px 80px rgba(0,0,0,0.2)",
+  },
+  appContainer: {
+    display: "flex", height: "100vh", overflow: "hidden", background: "#fff",
+  },
+  sidebar: {
+    width: 320, flexShrink: 0, display: "flex", flexDirection: "column",
+    borderRight: "1px solid #e2e8f0", background: "#fff", overflow: "hidden",
+  },
+  sidebarHeader: {
+    display: "flex", alignItems: "center", gap: 10,
+    padding: "16px", borderBottom: "1px solid #e2e8f0",
+  },
+  chatArea: {
+    flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", background: "#fafafa",
+  },
+  chatHeader: {
+    display: "flex", alignItems: "center", gap: 12,
+    padding: "12px 20px", borderBottom: "1px solid #e2e8f0",
+    background: "#fff", boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
+  },
+  messageList: {
+    flex: 1, overflowY: "auto", padding: "20px",
+  },
+  inputBar: {
+    display: "flex", alignItems: "center", gap: 10,
+    padding: "12px 16px", borderTop: "1px solid #e2e8f0", background: "#fff",
+  },
+};
