@@ -2,10 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Confi — Secure Confidential Messaging",
+  title: "Confi — Confidential Messaging",
   description:
-    "Confi is a secure messaging platform with built-in NDA activation, end-to-end encryption, and minimal PII storage.",
-  keywords: ["secure messaging", "confidential", "NDA", "encrypted chat"],
+    "Secure messaging with legally-binding NDA protection for sensitive conversations.",
 };
 
 export default function RootLayout({

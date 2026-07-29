@@ -1,40 +1,77 @@
 import { NextRequest, NextResponse } from "next/server";
-import { q, P, ensure } from "@/lib/db";
-import { verifyJwt, signAccessToken, hashToken } from "@/lib/jwt";
+import { q, P } from "@/lib/db";
+import {
+  verifyRefreshToken,
+  signAccessToken,
+  signRefreshToken,
+} from "@/lib/auth-utils";
 
 export async function POST(req: NextRequest) {
   try {
-    await ensure();
     const { refreshToken } = await req.json();
+
     if (!refreshToken) {
-      return NextResponse.json({ error: "Refresh token required." }, { status: 400 });
+      return NextResponse.json({ error: "No refresh token" }, { status: 401 });
     }
 
-    const payload = verifyJwt(refreshToken);
-    if (!payload || payload.type !== "refresh") {
-      return NextResponse.json({ error: "Invalid refresh token." }, { status: 401 });
+    const payload = verifyRefreshToken(refreshToken);
+    if (!payload) {
+      return NextResponse.json(
+        { error: "Invalid or expired refresh token" },
+        { status: 401 }
+      );
     }
 
-    const tokenHash = hashToken(refreshToken);
+    // Verify token matches what's stored (rotation check)
     const rows = await q(
-      `SELECT id, user_id, expires_at, revoked FROM ${P}refresh_tokens
-       WHERE token_hash = $1`,
-      [tokenHash]
+      `SELECT id, email, display_name, legal_name_verified, refresh_token FROM ${P}users WHERE id = $1`,
+      [payload.userId]
     );
 
-    if (!rows.length) {
-      return NextResponse.json({ error: "Token not found." }, { status: 401 });
+    if (rows.length === 0) {
+      return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
-    const record = rows[0] as { id: number; user_id: number; expires_at: string; revoked: boolean };
-    if (record.revoked || new Date(record.expires_at) < new Date()) {
-      return NextResponse.json({ error: "Token expired or revoked." }, { status: 401 });
+    const user = rows[0] as {
+      id: number;
+      email: string;
+      display_name: string | null;
+      legal_name_verified: boolean;
+      refresh_token: string;
+    };
+
+    if (user.refresh_token !== refreshToken) {
+      // Token reuse detected — invalidate all sessions
+      await q(`UPDATE ${P}users SET refresh_token = NULL WHERE id = $1`, [user.id]);
+      return NextResponse.json(
+        { error: "Token reuse detected. Please login again." },
+        { status: 401 }
+      );
     }
 
-    const newAccessToken = signAccessToken(record.user_id, payload.phone);
-    return NextResponse.json({ ok: true, accessToken: newAccessToken });
+    const newAccessToken = signAccessToken({
+      userId: user.id,
+      email: user.email,
+      displayName: user.display_name ?? undefined,
+      legalNameVerified: user.legal_name_verified,
+    });
+    const newRefreshToken = signRefreshToken({
+      userId: user.id,
+      email: user.email,
+    });
+
+    await q(
+      `UPDATE ${P}users SET refresh_token = $1, updated_at = NOW() WHERE id = $2`,
+      [newRefreshToken, user.id]
+    );
+
+    return NextResponse.json({
+      ok: true,
+      accessToken: newAccessToken,
+      refreshToken: newRefreshToken,
+    });
   } catch (err) {
-    console.error("[refresh]", err);
-    return NextResponse.json({ error: "Internal server error." }, { status: 500 });
+    console.error("Refresh error:", err);
+    return NextResponse.json({ error: "Token refresh failed" }, { status: 500 });
   }
 }

@@ -1,21 +1,25 @@
 import { NextRequest, NextResponse } from "next/server";
-import { q, P, ensure } from "@/lib/db";
-import { hashToken } from "@/lib/jwt";
+import { q, P } from "@/lib/db";
+import { verifyAccessToken } from "@/lib/auth-utils";
 
 export async function POST(req: NextRequest) {
   try {
-    await ensure();
-    const { refreshToken } = await req.json();
-    if (refreshToken) {
-      const tokenHash = hashToken(refreshToken);
-      await q(
-        `UPDATE ${P}refresh_tokens SET revoked = true WHERE token_hash = $1`,
-        [tokenHash]
-      );
+    const authHeader = req.headers.get("authorization");
+    const token = authHeader?.replace("Bearer ", "");
+
+    if (token) {
+      const payload = verifyAccessToken(token);
+      if (payload) {
+        await q(
+          `UPDATE ${P}users SET refresh_token = NULL, updated_at = NOW() WHERE id = $1`,
+          [payload.userId]
+        );
+      }
     }
-    return NextResponse.json({ ok: true });
+
+    return NextResponse.json({ ok: true, message: "Logged out successfully" });
   } catch (err) {
-    console.error("[logout]", err);
-    return NextResponse.json({ ok: true }); // Always succeed logout
+    console.error("Logout error:", err);
+    return NextResponse.json({ error: "Logout failed" }, { status: 500 });
   }
 }
