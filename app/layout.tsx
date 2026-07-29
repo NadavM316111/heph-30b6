@@ -4,10 +4,8 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "Confi — Confidential Messaging",
   description:
-    "Secure messaging app with international NDA protection. Your conversations, legally protected.",
-  icons: {
-    icon: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔒</text></svg>",
-  },
+    "Secure, identity-verified messaging with international NDA protection. Every conversation is auditable.",
+  icons: { icon: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔐</text></svg>" },
 };
 
 export default function RootLayout({
