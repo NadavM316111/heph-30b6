@@ -6,51 +6,81 @@
 
 html, body {
   height: 100%;
-  width: 100%;
-  font-family: 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-  background: #f5f5f5;
-  color: #1a1a2e;
+  background: #0a0f1e;
+  color: #ffffff;
+  font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  overscroll-behavior: none;
 }
 
-#__next {
-  height: 100%;
+#__next, main {
+  min-height: 100vh;
 }
 
-button {
+/* Scrollbar */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
+
+/* Input resets */
+input, select, textarea {
   font-family: inherit;
-}
-
-input, textarea {
-  font-family: inherit;
-}
-
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-
-::-webkit-scrollbar-track {
+  color: #fff;
   background: transparent;
 }
 
-::-webkit-scrollbar-thumb {
-  background: #ddd;
-  border-radius: 3px;
+input::placeholder {
+  color: rgba(255,255,255,0.3);
 }
 
-::-webkit-scrollbar-thumb:hover {
-  background: #bbb;
+select option {
+  background: #0d1a2d;
+  color: #fff;
 }
 
-input:focus {
-  border-color: #6c63ff !important;
-  box-shadow: 0 0 0 3px rgba(108, 99, 255, 0.12);
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  -webkit-box-shadow: 0 0 0 1000px #0d1a2d inset !important;
+  -webkit-text-fill-color: #fff !important;
+  border-color: rgba(0,200,150,0.5) !important;
 }
 
-@media (max-width: 700px) {
-  body {
-    font-size: 14px;
-  }
+/* Animations */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.05); opacity: 0.85; }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(-10px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Focus ring */
+button:focus-visible, input:focus-visible, select:focus-visible {
+  outline: 2px solid #00c896;
+  outline-offset: 2px;
+}
+
+/* Remove default number input spinners */
+input[type=number]::-webkit-outer-spin-button,
+input[type=number]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+}
+
+/* Selection */
+::selection {
+  background: rgba(0,200,150,0.3);
+  color: #fff;
 }

@@ -1,1833 +1,1056 @@
 "use client";
 
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-type Step =
-  | "landing"
-  | "register"
+type Screen =
+  | "splash"
+  | "welcome"
+  | "signup"
   | "login"
-  | "otp_email"
-  | "otp_phone"
+  | "otp"
   | "profile"
-  | "identity"
-  | "dashboard";
+  | "pin-setup"
+  | "pin-lock"
+  | "home";
 
-interface User {
+type AuthMode = "signup" | "login";
+
+interface UserSession {
   email: string;
   displayName: string;
   avatar: string;
   phone: string;
-  emailVerified: boolean;
-  phoneVerified: boolean;
-  identityStatus: "unverified" | "pending" | "verified" | "failed";
-  idDocumentData?: string;
-  selfieData?: string;
   createdAt: string;
+  sessionToken: string;
+  pinHash: string | null;
 }
 
-interface Message {
-  id: string;
-  from: string;
-  text: string;
-  timestamp: string;
-  confidential: boolean;
-}
-
-interface Conversation {
-  id: string;
-  with: string;
-  withAvatar: string;
-  messages: Message[];
-  ndaActive: boolean;
-  ndaSignedAt?: string;
+interface OtpState {
+  code: string;
+  expiresAt: number;
+  contact: string;
+  type: "email" | "phone";
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-function generateOTP(): string {
+function generateToken(): string {
+  const arr = new Uint8Array(32);
+  crypto.getRandomValues(arr);
+  return Array.from(arr, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function generateOtp(): string {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
-function generateId(): string {
-  return Math.random().toString(36).slice(2) + Date.now().toString(36);
-}
-
-function formatTime(iso: string): string {
-  const d = new Date(iso);
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
-
-function initials(name: string): string {
-  return name
-    .split(" ")
-    .map((w) => w[0])
-    .join("")
-    .toUpperCase()
-    .slice(0, 2);
-}
-
-// ─── Avatar Component ─────────────────────────────────────────────────────────
-function Avatar({
-  src,
-  name,
-  size = 40,
-}: {
-  src?: string;
-  name: string;
-  size?: number;
-}) {
-  if (src) {
-    return (
-      <img
-        src={src}
-        alt={name}
-        style={{
-          width: size,
-          height: size,
-          borderRadius: "50%",
-          objectFit: "cover",
-          flexShrink: 0,
-        }}
-      />
-    );
+function hashPin(pin: string): string {
+  // Simple deterministic hash for PIN (no bcrypt in browser; server handles real hashing)
+  let hash = 0;
+  const salted = `confi_pin_salt_${pin}_2024`;
+  for (let i = 0; i < salted.length; i++) {
+    const chr = salted.charCodeAt(i);
+    hash = (hash << 5) - hash + chr;
+    hash |= 0;
   }
-  const colors = [
-    "#6c63ff",
-    "#e91e8c",
-    "#00bcd4",
-    "#4caf50",
-    "#ff9800",
-    "#9c27b0",
-  ];
-  const color = colors[name.charCodeAt(0) % colors.length];
+  return `pin_${Math.abs(hash).toString(36)}_${pin.length}`;
+}
+
+function verifyPin(pin: string, stored: string): boolean {
+  return hashPin(pin) === stored;
+}
+
+function timeAgo(ms: number): string {
+  const diff = Date.now() - ms;
+  if (diff < 60000) return "just now";
+  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+  return `${Math.floor(diff / 3600000)}h ago`;
+}
+
+const AVATARS = [
+  "🦊","🐺","🦁","🐯","🐻","🐼","🦅","🦋","🐬","🦄",
+  "🌟","🔥","💎","🌙","⚡","🎭","🛡️","🗝️","🌊","🎯",
+];
+
+const COUNTRIES = [
+  { code: "+1", name: "US/CA" },
+  { code: "+44", name: "UK" },
+  { code: "+91", name: "IN" },
+  { code: "+49", name: "DE" },
+  { code: "+33", name: "FR" },
+  { code: "+81", name: "JP" },
+  { code: "+86", name: "CN" },
+  { code: "+55", name: "BR" },
+  { code: "+234", name: "NG" },
+  { code: "+27", name: "ZA" },
+];
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
+
+function Spinner() {
   return (
-    <div
-      style={{
-        width: size,
-        height: size,
-        borderRadius: "50%",
-        background: color,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        color: "#fff",
-        fontWeight: 700,
-        fontSize: size * 0.35,
-        flexShrink: 0,
-      }}
-    >
-      {initials(name)}
+    <div style={{
+      width: 24, height: 24, border: "3px solid rgba(255,255,255,0.3)",
+      borderTop: "3px solid #fff", borderRadius: "50%",
+      animation: "spin 0.8s linear infinite", display: "inline-block"
+    }} />
+  );
+}
+
+function OtpInput({
+  value, onChange, length = 6
+}: { value: string; onChange: (v: string) => void; length?: number }) {
+  const inputs = useRef<(HTMLInputElement | null)[]>([]);
+
+  const handleKey = (i: number, e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Backspace" && !value[i] && i > 0) {
+      inputs.current[i - 1]?.focus();
+    }
+  };
+
+  const handleChange = (i: number, v: string) => {
+    if (!/^\d?$/.test(v)) return;
+    const arr = value.split("");
+    arr[i] = v;
+    const next = arr.join("").slice(0, length);
+    onChange(next);
+    if (v && i < length - 1) inputs.current[i + 1]?.focus();
+  };
+
+  return (
+    <div style={{ display: "flex", gap: 10, justifyContent: "center" }}>
+      {Array.from({ length }).map((_, i) => (
+        <input
+          key={i}
+          ref={(el) => { inputs.current[i] = el; }}
+          type="text"
+          inputMode="numeric"
+          maxLength={1}
+          value={value[i] || ""}
+          onChange={(e) => handleChange(i, e.target.value)}
+          onKeyDown={(e) => handleKey(i, e)}
+          style={{
+            width: 46, height: 56, textAlign: "center", fontSize: 24,
+            fontWeight: 700, border: "2px solid",
+            borderColor: value[i] ? "#00c896" : "rgba(255,255,255,0.2)",
+            borderRadius: 12, background: "rgba(255,255,255,0.05)",
+            color: "#fff", outline: "none", transition: "border-color 0.2s",
+          }}
+        />
+      ))}
     </div>
   );
 }
 
-// ─── Badge ────────────────────────────────────────────────────────────────────
-function VerifiedBadge({ status }: { status: User["identityStatus"] }) {
-  const map: Record<string, { label: string; color: string; bg: string }> = {
-    unverified: { label: "Unverified", color: "#999", bg: "#f0f0f0" },
-    pending: { label: "Pending Review", color: "#f57c00", bg: "#fff3e0" },
-    verified: { label: "ID Verified ✓", color: "#2e7d32", bg: "#e8f5e9" },
-    failed: { label: "Verification Failed", color: "#c62828", bg: "#ffebee" },
-  };
-  const s = map[status];
+function PinPad({
+  value, onChange, maxLen = 6
+}: { value: string; onChange: (v: string) => void; maxLen?: number }) {
+  const digits = ["1","2","3","4","5","6","7","8","9","","0","⌫"];
   return (
-    <span
-      style={{
-        fontSize: 11,
-        fontWeight: 600,
-        color: s.color,
-        background: s.bg,
-        padding: "2px 8px",
-        borderRadius: 99,
-        letterSpacing: 0.3,
-      }}
-    >
-      {s.label}
-    </span>
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12, maxWidth: 280, margin: "0 auto" }}>
+      {digits.map((d, i) => (
+        <button
+          key={i}
+          onClick={() => {
+            if (d === "⌫") onChange(value.slice(0, -1));
+            else if (d && value.length < maxLen) onChange(value + d);
+          }}
+          style={{
+            height: 72, borderRadius: 16, fontSize: d === "⌫" ? 22 : 28,
+            fontWeight: 600, border: "none", cursor: d ? "pointer" : "default",
+            background: d ? "rgba(255,255,255,0.08)" : "transparent",
+            color: d === "⌫" ? "#ff6b6b" : "#fff",
+            transition: "background 0.15s", opacity: d ? 1 : 0,
+          }}
+          onMouseDown={(e) => { (e.currentTarget.style.background = "rgba(0,200,150,0.2)"); }}
+          onMouseUp={(e) => { (e.currentTarget.style.background = "rgba(255,255,255,0.08)"); }}
+        />
+      ))}
+    </div>
   );
 }
 
-// ─── Demo contacts ─────────────────────────────────────────────────────────────
-const DEMO_CONTACTS = [
-  { email: "alice@confi.app", displayName: "Alice Chen", avatar: "" },
-  { email: "bob@confi.app", displayName: "Bob Martinez", avatar: "" },
-  { email: "carol@confi.app", displayName: "Carol White", avatar: "" },
-];
+function PinDots({ value, max = 6 }: { value: string; max?: number }) {
+  return (
+    <div style={{ display: "flex", gap: 14, justifyContent: "center", margin: "24px 0" }}>
+      {Array.from({ length: max }).map((_, i) => (
+        <div key={i} style={{
+          width: 16, height: 16, borderRadius: "50%",
+          background: i < value.length ? "#00c896" : "rgba(255,255,255,0.2)",
+          transition: "background 0.15s, transform 0.1s",
+          transform: i === value.length - 1 ? "scale(1.3)" : "scale(1)",
+        }} />
+      ))}
+    </div>
+  );
+}
 
-// ─── Main Component ───────────────────────────────────────────────────────────
+// ─── Main Page ────────────────────────────────────────────────────────────────
 export default function ConfiApp() {
-  const [step, setStep] = useState<Step>("landing");
-  const [user, setUser] = useState<User | null>(null);
-  const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [activeConv, setActiveConv] = useState<string | null>(null);
-  const [newMessage, setNewMessage] = useState("");
-  const [showNDAModal, setShowNDAModal] = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [screen, setScreen] = useState<Screen>("splash");
+  const [authMode, setAuthMode] = useState<AuthMode>("signup");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [toast, setToast] = useState("");
 
-  // Auth form state
+  // Auth fields
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showPass, setShowPass] = useState(false);
+  const [countryCode, setCountryCode] = useState("+1");
   const [phone, setPhone] = useState("");
+
+  // OTP
+  const [otpValue, setOtpValue] = useState("");
+  const [otpState, setOtpState] = useState<OtpState | null>(null);
+  const [otpCooldown, setOtpCooldown] = useState(0);
+  const [otpTarget, setOtpTarget] = useState<"email" | "phone">("email");
+  const [pendingAuthMode, setPendingAuthMode] = useState<AuthMode>("signup");
+
+  // Profile
   const [displayName, setDisplayName] = useState("");
-  const [avatarData, setAvatarData] = useState("");
-  const [authError, setAuthError] = useState("");
-  const [authLoading, setAuthLoading] = useState(false);
+  const [selectedAvatar, setSelectedAvatar] = useState(AVATARS[0]);
 
-  // OTP state
-  const [emailOTP, setEmailOTP] = useState("");
-  const [phoneOTP, setPhoneOTP] = useState("");
-  const [generatedEmailOTP, setGeneratedEmailOTP] = useState("");
-  const [generatedPhoneOTP, setGeneratedPhoneOTP] = useState("");
-  const [otpInput, setOtpInput] = useState("");
-  const [otpError, setOtpError] = useState("");
-  const [otpResent, setOtpResent] = useState(false);
+  // PIN
+  const [pinValue, setPinValue] = useState("");
+  const [pinConfirm, setPinConfirm] = useState("");
+  const [pinStep, setPinStep] = useState<"enter" | "confirm">("enter");
+  const [pinError, setPinError] = useState("");
+  const [pinAttempts, setPinAttempts] = useState(0);
+  const [pinLocked, setPinLocked] = useState(false);
+  const [pinLockUntil, setPinLockUntil] = useState(0);
+  const [useBiometric, setUseBiometric] = useState(false);
 
-  // Identity verification state
-  const [idDocFile, setIdDocFile] = useState<string>("");
-  const [selfieFile, setSelfieFile] = useState<string>("");
-  const [idVerifyLoading, setIdVerifyLoading] = useState(false);
-  const [idVerifyError, setIdVerifyError] = useState("");
+  // Session
+  const [session, setSession] = useState<UserSession | null>(null);
 
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const avatarInputRef = useRef<HTMLInputElement>(null);
-  const idDocInputRef = useRef<HTMLInputElement>(null);
-  const selfieInputRef = useRef<HTMLInputElement>(null);
-
-  // ── Bootstrap ───────────────────────────────────────────────────────────────
+  // Track analytics on load
   useEffect(() => {
     fetch("/api/track", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path: window.location.pathname }),
     }).catch(() => {});
-
-    const saved = localStorage.getItem("confi_user");
-    if (saved) {
-      const u = JSON.parse(saved) as User;
-      setUser(u);
-      const savedConvs = localStorage.getItem("confi_conversations");
-      if (savedConvs) setConversations(JSON.parse(savedConvs));
-      else initDemoConversations(u.email);
-      setStep("dashboard");
-    }
   }, []);
 
+  // Splash → check session
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [activeConv, conversations]);
-
-  function initDemoConversations(userEmail: string) {
-    const convs: Conversation[] = DEMO_CONTACTS.map((c) => ({
-      id: generateId(),
-      with: c.email,
-      withAvatar: c.avatar,
-      messages: [
-        {
-          id: generateId(),
-          from: c.email,
-          text: `Hi! I'm ${c.displayName}. Ready to use Confi securely?`,
-          timestamp: new Date(Date.now() - 3600000).toISOString(),
-          confidential: false,
-        },
-      ],
-      ndaActive: false,
-    }));
-    setConversations(convs);
-    localStorage.setItem("confi_conversations", JSON.stringify(convs));
-  }
-
-  function persistUser(u: User) {
-    setUser(u);
-    localStorage.setItem("confi_user", JSON.stringify(u));
-  }
-
-  function persistConversations(convs: Conversation[]) {
-    setConversations(convs);
-    localStorage.setItem("confi_conversations", JSON.stringify(convs));
-  }
-
-  // ── Register ────────────────────────────────────────────────────────────────
-  async function handleRegister() {
-    setAuthError("");
-    if (!email || !password || !confirmPassword || !phone) {
-      setAuthError("All fields are required.");
-      return;
-    }
-    if (!/^\S+@\S+\.\S+$/.test(email)) {
-      setAuthError("Invalid email address.");
-      return;
-    }
-    if (password !== confirmPassword) {
-      setAuthError("Passwords do not match.");
-      return;
-    }
-    if (password.length < 8) {
-      setAuthError("Password must be at least 8 characters.");
-      return;
-    }
-    if (!/^\+?[\d\s\-().]{7,}$/.test(phone)) {
-      setAuthError("Enter a valid phone number.");
-      return;
-    }
-    setAuthLoading(true);
-    try {
-      const res = await fetch("/api/auth", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: "signup", email, password }),
-      });
-      const data = await res.json();
-      if (!res.ok || data.error) {
-        setAuthError(data.error || "Registration failed.");
-        return;
-      }
-      // Generate and "send" email OTP
-      const otp = generateOTP();
-      setGeneratedEmailOTP(otp);
-      setEmailOTP(otp); // In prod this would be sent via email
-      // Store partial user
-      localStorage.setItem(
-        "confi_pending",
-        JSON.stringify({ email, phone, password })
-      );
-      setStep("otp_email");
-    } catch {
-      setAuthError("Network error. Please try again.");
-    } finally {
-      setAuthLoading(false);
-    }
-  }
-
-  // ── Login ───────────────────────────────────────────────────────────────────
-  async function handleLogin() {
-    setAuthError("");
-    if (!email || !password) {
-      setAuthError("Email and password are required.");
-      return;
-    }
-    setAuthLoading(true);
-    try {
-      const res = await fetch("/api/auth", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: "login", email, password }),
-      });
-      const data = await res.json();
-      if (!res.ok || data.error) {
-        setAuthError(data.error || "Login failed.");
-        return;
-      }
-      // Check for existing profile
-      const existing = localStorage.getItem("confi_user");
-      if (existing) {
-        const u = JSON.parse(existing) as User;
-        if (u.email === data.email) {
-          persistUser(u);
-          const savedConvs = localStorage.getItem("confi_conversations");
-          if (savedConvs) setConversations(JSON.parse(savedConvs));
-          else initDemoConversations(u.email);
-          setStep("dashboard");
-          return;
+    const timer = setTimeout(() => {
+      const stored = localStorage.getItem("confi_session");
+      if (stored) {
+        try {
+          const parsed: UserSession = JSON.parse(stored);
+          setSession(parsed);
+          if (parsed.pinHash) {
+            setScreen("pin-lock");
+          } else {
+            setScreen("home");
+          }
+        } catch {
+          setScreen("welcome");
         }
+      } else {
+        setScreen("welcome");
       }
-      // New device – build minimal profile
-      const u: User = {
-        email: data.email,
-        displayName: data.email.split("@")[0],
-        avatar: "",
-        phone: "",
-        emailVerified: true,
-        phoneVerified: false,
-        identityStatus: "unverified",
-        createdAt: new Date().toISOString(),
-      };
-      persistUser(u);
-      initDemoConversations(u.email);
-      setStep("dashboard");
+    }, 2000);
+    return () => clearTimeout(timer);
+  }, []);
+
+  // OTP countdown
+  useEffect(() => {
+    if (otpCooldown <= 0) return;
+    const t = setInterval(() => setOtpCooldown((c) => Math.max(0, c - 1)), 1000);
+    return () => clearInterval(t);
+  }, [otpCooldown]);
+
+  // PIN lock timer
+  useEffect(() => {
+    if (pinLockUntil <= 0) return;
+    const t = setInterval(() => {
+      if (Date.now() > pinLockUntil) {
+        setPinLocked(false);
+        setPinLockUntil(0);
+        setPinAttempts(0);
+      }
+    }, 1000);
+    return () => clearInterval(t);
+  }, [pinLockUntil]);
+
+  const showToast = useCallback((msg: string) => {
+    setToast(msg);
+    setTimeout(() => setToast(""), 3000);
+  }, []);
+
+  // ── Send OTP (simulated — real SMS requires a key we don't have) ──
+  const sendOtp = useCallback((target: "email" | "phone", mode: AuthMode) => {
+    const code = generateOtp();
+    const contact = target === "email" ? email : `${countryCode}${phone}`;
+    const otp: OtpState = {
+      code,
+      expiresAt: Date.now() + 5 * 60 * 1000,
+      contact,
+      type: target,
+    };
+    setOtpState(otp);
+    setOtpTarget(target);
+    setPendingAuthMode(mode);
+    setOtpCooldown(60);
+    setOtpValue("");
+    // In production this would be sent via server. We display it in toast for demo.
+    showToast(`OTP for ${contact}: ${code} (expires 5 min)`);
+    setScreen("otp");
+  }, [email, phone, countryCode, showToast]);
+
+  // ── Handle Auth Submit ──
+  const handleAuth = useCallback(async (mode: AuthMode) => {
+    setError("");
+    if (!email || !password) { setError("Email and password are required."); return; }
+    if (password.length < 8) { setError("Password must be at least 8 characters."); return; }
+    if (!phone) { setError("Phone number is required."); return; }
+
+    setLoading(true);
+    try {
+      const res = await fetch("/api/auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode, email, password }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        setError(data.error || "Authentication failed.");
+        setLoading(false);
+        return;
+      }
+      // Auth passed — verify identity via OTP
+      sendOtp("email", mode);
     } catch {
-      setAuthError("Network error. Please try again.");
+      setError("Network error. Please try again.");
     } finally {
-      setAuthLoading(false);
+      setLoading(false);
     }
-  }
+  }, [email, password, phone, sendOtp]);
 
-  // ── OTP Email ────────────────────────────────────────────────────────────────
-  function handleVerifyEmailOTP() {
-    setOtpError("");
-    if (otpInput !== generatedEmailOTP) {
-      setOtpError("Incorrect code. Please try again.");
+  // ── Verify OTP ──
+  const verifyOtp = useCallback(() => {
+    if (!otpState) return;
+    if (Date.now() > otpState.expiresAt) {
+      setError("OTP expired. Please request a new one.");
       return;
     }
-    const otp = generateOTP();
-    setGeneratedPhoneOTP(otp);
-    setPhoneOTP(otp);
-    setOtpInput("");
-    setStep("otp_phone");
-  }
-
-  function resendEmailOTP() {
-    const otp = generateOTP();
-    setGeneratedEmailOTP(otp);
-    setEmailOTP(otp);
-    setOtpResent(true);
-    setTimeout(() => setOtpResent(false), 3000);
-  }
-
-  // ── OTP Phone ────────────────────────────────────────────────────────────────
-  function handleVerifyPhoneOTP() {
-    setOtpError("");
-    if (otpInput !== generatedPhoneOTP) {
-      setOtpError("Incorrect code. Please try again.");
+    if (otpValue !== otpState.code) {
+      setError("Incorrect OTP. Please try again.");
       return;
     }
-    setOtpInput("");
-    setStep("profile");
-  }
-
-  function resendPhoneOTP() {
-    const otp = generateOTP();
-    setGeneratedPhoneOTP(otp);
-    setPhoneOTP(otp);
-    setOtpResent(true);
-    setTimeout(() => setOtpResent(false), 3000);
-  }
-
-  // ── Profile Setup ─────────────────────────────────────────────────────────────
-  function handleProfileSetup() {
-    if (!displayName.trim()) {
-      setAuthError("Display name is required.");
-      return;
+    setError("");
+    // OTP verified — proceed
+    if (pendingAuthMode === "signup") {
+      setScreen("profile");
+    } else {
+      // Login: restore profile if exists
+      const stored = localStorage.getItem("confi_session");
+      if (stored) {
+        const parsed: UserSession = JSON.parse(stored);
+        const newSession: UserSession = {
+          ...parsed,
+          sessionToken: generateToken(),
+        };
+        setSession(newSession);
+        localStorage.setItem("confi_session", JSON.stringify(newSession));
+        if (parsed.pinHash) {
+          setScreen("pin-lock");
+        } else {
+          setScreen("home");
+        }
+      } else {
+        setScreen("profile");
+      }
     }
-    const pending = JSON.parse(localStorage.getItem("confi_pending") || "{}");
-    const u: User = {
-      email: email || pending.email,
+  }, [otpState, otpValue, pendingAuthMode]);
+
+  // ── Save Profile ──
+  const saveProfile = useCallback(() => {
+    if (!displayName.trim()) { setError("Display name is required."); return; }
+    setError("");
+    const newSession: UserSession = {
+      email,
       displayName: displayName.trim(),
-      avatar: avatarData,
-      phone: phone || pending.phone,
-      emailVerified: true,
-      phoneVerified: true,
-      identityStatus: "unverified",
+      avatar: selectedAvatar,
+      phone: `${countryCode}${phone}`,
       createdAt: new Date().toISOString(),
+      sessionToken: generateToken(),
+      pinHash: null,
     };
-    persistUser(u);
-    localStorage.removeItem("confi_pending");
-    initDemoConversations(u.email);
-    setStep("identity");
-  }
+    setSession(newSession);
+    localStorage.setItem("confi_session", JSON.stringify(newSession));
+    setScreen("pin-setup");
+  }, [displayName, selectedAvatar, email, phone, countryCode]);
 
-  function handleAvatarChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => setAvatarData(ev.target?.result as string);
-    reader.readAsDataURL(file);
-  }
-
-  // ── Identity Verification ─────────────────────────────────────────────────────
-  function handleIdDocChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => setIdDocFile(ev.target?.result as string);
-    reader.readAsDataURL(file);
-  }
-
-  function handleSelfieChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => setSelfieFile(ev.target?.result as string);
-    reader.readAsDataURL(file);
-  }
-
-  async function handleSubmitIdentity() {
-    if (!idDocFile || !selfieFile) {
-      setIdVerifyError(
-        "Please upload both a government ID and a selfie photo."
-      );
-      return;
+  // ── Setup PIN ──
+  const handlePinSetup = useCallback(() => {
+    if (pinStep === "enter") {
+      if (pinValue.length < 4) { setPinError("PIN must be at least 4 digits."); return; }
+      setPinError("");
+      setPinStep("confirm");
+      setPinConfirm(pinValue);
+      setPinValue("");
+    } else {
+      if (pinValue !== pinConfirm) {
+        setPinError("PINs do not match. Try again.");
+        setPinStep("enter");
+        setPinValue("");
+        setPinConfirm("");
+        return;
+      }
+      const hash = hashPin(pinValue);
+      const updated = { ...session!, pinHash: hash };
+      setSession(updated);
+      localStorage.setItem("confi_session", JSON.stringify(updated));
+      setPinValue("");
+      setPinStep("enter");
+      showToast("PIN set successfully!");
+      setScreen("home");
     }
-    setIdVerifyLoading(true);
-    setIdVerifyError("");
-    // Simulate processing delay (in prod: POST to Stripe Identity / Persona)
-    await new Promise((r) => setTimeout(r, 2500));
-    const u: User = {
-      ...user!,
-      identityStatus: "pending",
-      idDocumentData: idDocFile,
-      selfieData: selfieFile,
-    };
-    persistUser(u);
-    setIdVerifyLoading(false);
-    // Simulate async approval after 5s
-    setTimeout(() => {
-      const latest = JSON.parse(
-        localStorage.getItem("confi_user") || "{}"
-      ) as User;
-      const updated: User = { ...latest, identityStatus: "verified" };
-      persistUser(updated);
-    }, 5000);
-    setStep("dashboard");
-  }
+  }, [pinStep, pinValue, pinConfirm, session, showToast]);
 
-  function skipIdentity() {
-    setStep("dashboard");
-  }
+  // ── Skip PIN ──
+  const skipPin = useCallback(() => {
+    showToast("You can set a PIN anytime from settings.");
+    setScreen("home");
+  }, [showToast]);
 
-  // ── Messaging ─────────────────────────────────────────────────────────────────
-  function sendMessage() {
-    if (!newMessage.trim() || !activeConv) return;
-    const conv = conversations.find((c) => c.id === activeConv);
-    if (!conv) return;
-    const msg: Message = {
-      id: generateId(),
-      from: user!.email,
-      text: newMessage.trim(),
-      timestamp: new Date().toISOString(),
-      confidential: conv.ndaActive,
-    };
-    const updated = conversations.map((c) =>
-      c.id === activeConv ? { ...c, messages: [...c.messages, msg] } : c
-    );
-    persistConversations(updated);
-    setNewMessage("");
-
-    // Simulate reply after 1.5s
-    setTimeout(() => {
-      const latest = JSON.parse(
-        localStorage.getItem("confi_conversations") || "[]"
-      ) as Conversation[];
-      const reply: Message = {
-        id: generateId(),
-        from: conv.with,
-        text: conv.ndaActive
-          ? "📋 (NDA active) Understood. This stays between us."
-          : "Got it! Thanks for the message.",
-        timestamp: new Date().toISOString(),
-        confidential: conv.ndaActive,
-      };
-      const withReply = latest.map((c) =>
-        c.id === activeConv ? { ...c, messages: [...c.messages, reply] } : c
-      );
-      persistConversations(withReply);
-    }, 1500);
-  }
-
-  function activateNDA(convId: string) {
-    if (user?.identityStatus !== "verified") {
-      alert(
-        "You must complete identity verification before activating confidential mode."
-      );
-      return;
+  // ── Verify PIN lock ──
+  const verifyPinLock = useCallback(() => {
+    if (pinLocked) return;
+    if (!session?.pinHash) { setScreen("home"); return; }
+    if (verifyPin(pinValue, session.pinHash)) {
+      setPinAttempts(0);
+      setPinValue("");
+      setScreen("home");
+    } else {
+      const attempts = pinAttempts + 1;
+      setPinAttempts(attempts);
+      setPinValue("");
+      if (attempts >= 5) {
+        setPinLocked(true);
+        const until = Date.now() + 30000;
+        setPinLockUntil(until);
+        setPinError("Too many attempts. Locked for 30 seconds.");
+      } else {
+        setPinError(`Incorrect PIN. ${5 - attempts} attempts remaining.`);
+      }
     }
-    setActiveConv(convId);
-    setShowNDAModal(true);
-  }
+  }, [pinValue, session, pinAttempts, pinLocked]);
 
-  function confirmNDA() {
-    const updated = conversations.map((c) =>
-      c.id === activeConv
-        ? { ...c, ndaActive: true, ndaSignedAt: new Date().toISOString() }
-        : c
-    );
-    persistConversations(updated);
-    // Add system message
-    const conv = updated.find((c) => c.id === activeConv)!;
-    const sysMsg: Message = {
-      id: generateId(),
-      from: "system",
-      text: `🔒 Confidential Mode activated. This conversation is now covered under an international NDA. All parties agree to strict confidentiality. Signed: ${new Date().toLocaleString()}`,
-      timestamp: new Date().toISOString(),
-      confidential: true,
-    };
-    const withSys = updated.map((c) =>
-      c.id === activeConv ? { ...c, messages: [...c.messages, sysMsg] } : c
-    );
-    persistConversations(withSys);
-    setShowNDAModal(false);
-  }
+  // ── Logout ──
+  const logout = useCallback(() => {
+    localStorage.removeItem("confi_session");
+    setSession(null);
+    setEmail(""); setPassword(""); setPhone("");
+    setDisplayName(""); setPinValue(""); setPinConfirm("");
+    setPinStep("enter"); setOtpValue(""); setOtpState(null);
+    setPinAttempts(0); setPinLocked(false);
+    setScreen("welcome");
+  }, []);
 
-  function deactivateNDA(convId: string) {
-    const updated = conversations.map((c) =>
-      c.id === convId
-        ? { ...c, ndaActive: false, ndaSignedAt: undefined }
-        : c
-    );
-    persistConversations(updated);
-    const conv = updated.find((c) => c.id === convId)!;
-    const sysMsg: Message = {
-      id: generateId(),
-      from: "system",
-      text: `🔓 Confidential Mode deactivated. Previous NDA coverage remains in effect for messages sent during the session.`,
-      timestamp: new Date().toISOString(),
-      confidential: false,
-    };
-    const withSys = updated.map((c) =>
-      c.id === convId ? { ...c, messages: [...c.messages, sysMsg] } : c
-    );
-    persistConversations(withSys);
-  }
+  // ────────────────────────────────────────────────────────────────────────────
+  // ── RENDER ──
+  // ────────────────────────────────────────────────────────────────────────────
 
-  function logout() {
-    localStorage.removeItem("confi_user");
-    localStorage.removeItem("confi_conversations");
-    localStorage.removeItem("confi_pending");
-    setUser(null);
-    setConversations([]);
-    setActiveConv(null);
-    setEmail("");
-    setPassword("");
-    setConfirmPassword("");
-    setPhone("");
-    setDisplayName("");
-    setAvatarData("");
-    setStep("landing");
-  }
+  return (
+    <div style={{
+      minHeight: "100vh", background: "linear-gradient(135deg,#0a0f1e 0%,#0d1a2d 50%,#061218 100%)",
+      color: "#fff", fontFamily: "'Inter',system-ui,sans-serif", position: "relative", overflow: "hidden",
+    }}>
+      {/* Background orbs */}
+      <div style={{
+        position: "fixed", width: 400, height: 400, borderRadius: "50%",
+        background: "radial-gradient(circle,rgba(0,200,150,0.08) 0%,transparent 70%)",
+        top: -100, right: -100, pointerEvents: "none",
+      }} />
+      <div style={{
+        position: "fixed", width: 300, height: 300, borderRadius: "50%",
+        background: "radial-gradient(circle,rgba(100,100,255,0.06) 0%,transparent 70%)",
+        bottom: -50, left: -50, pointerEvents: "none",
+      }} />
 
-  // ─── Contact name helper ──────────────────────────────────────────────────
-  function contactName(email: string): string {
-    const found = DEMO_CONTACTS.find((c) => c.email === email);
-    return found?.displayName || email.split("@")[0];
-  }
-
-  const currentConv = conversations.find((c) => c.id === activeConv) ?? null;
-
-  // ══════════════════════════════════════════════════════════════════════════════
-  // RENDER
-  // ══════════════════════════════════════════════════════════════════════════════
-
-  // ─── Landing ─────────────────────────────────────────────────────────────────
-  if (step === "landing") {
-    return (
-      <div style={styles.centered}>
-        <div style={styles.card}>
-          <div style={{ textAlign: "center", marginBottom: 32 }}>
-            <div style={styles.logo}>🔐</div>
-            <h1 style={styles.appName}>Confi</h1>
-            <p style={styles.tagline}>
-              Secure messaging with legally-binding NDA protection
-            </p>
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <button style={styles.btnPrimary} onClick={() => setStep("register")}>
-              Create Account
-            </button>
-            <button style={styles.btnSecondary} onClick={() => setStep("login")}>
-              Sign In
-            </button>
-          </div>
-          <div style={styles.featureList}>
-            {[
-              "✅ End-to-end encrypted messaging",
-              "📋 International NDA activation",
-              "🪪 Government ID verification",
-              "⚖️ Legally attributable signatures",
-            ].map((f) => (
-              <div key={f} style={styles.featureItem}>
-                {f}
-              </div>
-            ))}
-          </div>
+      {/* Toast */}
+      {toast && (
+        <div style={{
+          position: "fixed", top: 20, left: "50%", transform: "translateX(-50%)",
+          background: "rgba(0,200,150,0.95)", color: "#000", padding: "12px 24px",
+          borderRadius: 40, fontWeight: 600, fontSize: 13, zIndex: 1000,
+          boxShadow: "0 8px 32px rgba(0,200,150,0.3)", maxWidth: "90vw", textAlign: "center",
+          animation: "fadeIn 0.3s ease",
+        }}>
+          {toast}
         </div>
-      </div>
-    );
-  }
+      )}
 
-  // ─── Register ────────────────────────────────────────────────────────────────
-  if (step === "register") {
-    return (
-      <div style={styles.centered}>
-        <div style={styles.card}>
-          <h2 style={styles.formTitle}>Create Account</h2>
-          <p style={styles.formSubtitle}>
-            Join Confi — your identity will be verified for NDA features.
-          </p>
-          {authError && <div style={styles.errorBox}>{authError}</div>}
-          <div style={styles.fieldGroup}>
-            <label style={styles.label}>Email Address</label>
-            <input
-              style={styles.input}
-              type="email"
-              placeholder="you@example.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleRegister()}
-            />
-          </div>
-          <div style={styles.fieldGroup}>
-            <label style={styles.label}>Phone Number</label>
-            <input
-              style={styles.input}
-              type="tel"
-              placeholder="+1 555 000 0000"
-              value={phone}
-              onChange={(e) => setPhone(e.target.value)}
-            />
-          </div>
-          <div style={styles.fieldGroup}>
-            <label style={styles.label}>Password</label>
-            <input
-              style={styles.input}
-              type="password"
-              placeholder="Min 8 characters"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-          </div>
-          <div style={styles.fieldGroup}>
-            <label style={styles.label}>Confirm Password</label>
-            <input
-              style={styles.input}
-              type="password"
-              placeholder="Repeat password"
-              value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleRegister()}
-            />
-          </div>
-          <button
-            style={{ ...styles.btnPrimary, opacity: authLoading ? 0.7 : 1 }}
-            onClick={handleRegister}
-            disabled={authLoading}
-          >
-            {authLoading ? "Creating account…" : "Continue"}
-          </button>
-          <button
-            style={styles.btnLink}
-            onClick={() => {
-              setStep("login");
-              setAuthError("");
-            }}
-          >
-            Already have an account? Sign in
-          </button>
-        </div>
-      </div>
-    );
-  }
+      <div style={{ maxWidth: 420, margin: "0 auto", minHeight: "100vh", display: "flex", flexDirection: "column" }}>
 
-  // ─── Login ────────────────────────────────────────────────────────────────────
-  if (step === "login") {
-    return (
-      <div style={styles.centered}>
-        <div style={styles.card}>
-          <h2 style={styles.formTitle}>Welcome back</h2>
-          <p style={styles.formSubtitle}>Sign in to your Confi account</p>
-          {authError && <div style={styles.errorBox}>{authError}</div>}
-          <div style={styles.fieldGroup}>
-            <label style={styles.label}>Email Address</label>
-            <input
-              style={styles.input}
-              type="email"
-              placeholder="you@example.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-            />
-          </div>
-          <div style={styles.fieldGroup}>
-            <label style={styles.label}>Password</label>
-            <input
-              style={styles.input}
-              type="password"
-              placeholder="Your password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleLogin()}
-            />
-          </div>
-          <button
-            style={{ ...styles.btnPrimary, opacity: authLoading ? 0.7 : 1 }}
-            onClick={handleLogin}
-            disabled={authLoading}
-          >
-            {authLoading ? "Signing in…" : "Sign In"}
-          </button>
-          <button
-            style={styles.btnLink}
-            onClick={() => {
-              setStep("register");
-              setAuthError("");
-            }}
-          >
-            No account? Create one
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  // ─── OTP Email ────────────────────────────────────────────────────────────────
-  if (step === "otp_email") {
-    return (
-      <div style={styles.centered}>
-        <div style={styles.card}>
-          <div style={{ textAlign: "center", marginBottom: 24 }}>
-            <div style={{ fontSize: 48, marginBottom: 8 }}>📧</div>
-            <h2 style={styles.formTitle}>Verify your email</h2>
-            <p style={styles.formSubtitle}>
-              We sent a 6-digit code to{" "}
-              <strong>{email}</strong>
-            </p>
-          </div>
-          <div
-            style={{
-              background: "#e8f5e9",
-              border: "1px solid #a5d6a7",
-              borderRadius: 8,
-              padding: 12,
-              marginBottom: 16,
-              fontSize: 13,
-              color: "#2e7d32",
-              textAlign: "center",
-            }}
-          >
-            Demo mode — your OTP is: <strong>{generatedEmailOTP}</strong>
-          </div>
-          {otpError && <div style={styles.errorBox}>{otpError}</div>}
-          {otpResent && (
-            <div style={{ ...styles.errorBox, background: "#e3f2fd", color: "#1565c0", borderColor: "#90caf9" }}>
-              A new code has been sent!
-            </div>
-          )}
-          <div style={styles.fieldGroup}>
-            <label style={styles.label}>Enter 6-digit code</label>
-            <input
-              style={{ ...styles.input, letterSpacing: 8, fontSize: 24, textAlign: "center" }}
-              type="text"
-              maxLength={6}
-              placeholder="000000"
-              value={otpInput}
-              onChange={(e) => setOtpInput(e.target.value.replace(/\D/g, ""))}
-              onKeyDown={(e) => e.key === "Enter" && handleVerifyEmailOTP()}
-            />
-          </div>
-          <button style={styles.btnPrimary} onClick={handleVerifyEmailOTP}>
-            Verify Email
-          </button>
-          <button style={styles.btnLink} onClick={resendEmailOTP}>
-            Resend code
-          </button>
-          <button style={styles.btnLink} onClick={() => setStep("register")}>
-            ← Back
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  // ─── OTP Phone ────────────────────────────────────────────────────────────────
-  if (step === "otp_phone") {
-    return (
-      <div style={styles.centered}>
-        <div style={styles.card}>
-          <div style={{ textAlign: "center", marginBottom: 24 }}>
-            <div style={{ fontSize: 48, marginBottom: 8 }}>📱</div>
-            <h2 style={styles.formTitle}>Verify your phone</h2>
-            <p style={styles.formSubtitle}>
-              We sent a code to <strong>{phone}</strong>
-            </p>
-          </div>
-          <div
-            style={{
-              background: "#e8f5e9",
-              border: "1px solid #a5d6a7",
-              borderRadius: 8,
-              padding: 12,
-              marginBottom: 16,
-              fontSize: 13,
-              color: "#2e7d32",
-              textAlign: "center",
-            }}
-          >
-            Demo mode — your OTP is: <strong>{generatedPhoneOTP}</strong>
-          </div>
-          {otpError && <div style={styles.errorBox}>{otpError}</div>}
-          {otpResent && (
-            <div style={{ ...styles.errorBox, background: "#e3f2fd", color: "#1565c0", borderColor: "#90caf9" }}>
-              A new code has been sent!
-            </div>
-          )}
-          <div style={styles.fieldGroup}>
-            <label style={styles.label}>Enter 6-digit code</label>
-            <input
-              style={{ ...styles.input, letterSpacing: 8, fontSize: 24, textAlign: "center" }}
-              type="text"
-              maxLength={6}
-              placeholder="000000"
-              value={otpInput}
-              onChange={(e) => setOtpInput(e.target.value.replace(/\D/g, ""))}
-              onKeyDown={(e) => e.key === "Enter" && handleVerifyPhoneOTP()}
-            />
-          </div>
-          <button style={styles.btnPrimary} onClick={handleVerifyPhoneOTP}>
-            Verify Phone
-          </button>
-          <button style={styles.btnLink} onClick={resendPhoneOTP}>
-            Resend code
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  // ─── Profile Setup ────────────────────────────────────────────────────────────
-  if (step === "profile") {
-    return (
-      <div style={styles.centered}>
-        <div style={styles.card}>
-          <h2 style={styles.formTitle}>Set up your profile</h2>
-          <p style={styles.formSubtitle}>
-            This name and photo will appear in conversations.
-          </p>
-          {authError && <div style={styles.errorBox}>{authError}</div>}
-
-          {/* Avatar picker */}
-          <div style={{ display: "flex", justifyContent: "center", marginBottom: 24 }}>
-            <div style={{ position: "relative", cursor: "pointer" }} onClick={() => avatarInputRef.current?.click()}>
-              {avatarData ? (
-                <img
-                  src={avatarData}
-                  alt="avatar"
-                  style={{ width: 90, height: 90, borderRadius: "50%", objectFit: "cover", border: "3px solid #6c63ff" }}
-                />
-              ) : (
-                <div
-                  style={{
-                    width: 90,
-                    height: 90,
-                    borderRadius: "50%",
-                    background: "#f0f0f0",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    fontSize: 36,
-                    border: "3px dashed #ccc",
-                  }}
-                >
-                  📷
-                </div>
-              )}
-              <div
-                style={{
-                  position: "absolute",
-                  bottom: 0,
-                  right: 0,
-                  background: "#6c63ff",
-                  color: "#fff",
-                  borderRadius: "50%",
-                  width: 26,
-                  height: 26,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  fontSize: 14,
-                }}
-              >
-                +
-              </div>
-            </div>
-            <input
-              ref={avatarInputRef}
-              type="file"
-              accept="image/*"
-              style={{ display: "none" }}
-              onChange={handleAvatarChange}
-            />
-          </div>
-          <p style={{ textAlign: "center", fontSize: 12, color: "#999", marginTop: -16, marginBottom: 16 }}>
-            Tap to upload profile photo
-          </p>
-
-          <div style={styles.fieldGroup}>
-            <label style={styles.label}>Display Name</label>
-            <input
-              style={styles.input}
-              type="text"
-              placeholder="Your full name"
-              value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleProfileSetup()}
-            />
-          </div>
-          <button style={styles.btnPrimary} onClick={handleProfileSetup}>
-            Continue to Identity Verification
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  // ─── Identity Verification ────────────────────────────────────────────────────
-  if (step === "identity") {
-    return (
-      <div style={styles.centered}>
-        <div style={{ ...styles.card, maxWidth: 500 }}>
-          <div style={{ textAlign: "center", marginBottom: 20 }}>
-            <div style={{ fontSize: 48 }}>🪪</div>
-            <h2 style={styles.formTitle}>Identity Verification</h2>
-            <p style={styles.formSubtitle}>
-              To legally sign NDAs, we must verify your real-world identity.
-              Your documents are processed securely and never shared.
-            </p>
-          </div>
-
-          <div style={styles.idvInfoBox}>
-            <strong>Why is this required?</strong>
-            <p style={{ margin: "8px 0 0", lineHeight: 1.5 }}>
-              NDA signatures must be legally attributable to a verified
-              individual. We use the same process as Stripe Identity / Persona
-              to confirm your government ID matches your selfie. Verified status
-              is stored on your account and required to activate confidential
-              mode.
-            </p>
-          </div>
-
-          {idVerifyError && <div style={styles.errorBox}>{idVerifyError}</div>}
-
-          {/* Government ID upload */}
-          <div style={styles.fieldGroup}>
-            <label style={styles.label}>
-              📄 Government-Issued ID{" "}
-              <span style={{ color: "#999", fontWeight: 400 }}>
-                (passport, driver&apos;s license, national ID)
-              </span>
-            </label>
-            <div
-              style={styles.uploadBox}
-              onClick={() => idDocInputRef.current?.click()}
-            >
-              {idDocFile ? (
-                <img
-                  src={idDocFile}
-                  alt="ID"
-                  style={{ maxHeight: 120, borderRadius: 6 }}
-                />
-              ) : (
-                <>
-                  <div style={{ fontSize: 32 }}>📁</div>
-                  <div style={{ fontSize: 13, color: "#666", marginTop: 8 }}>
-                    Click to upload front of ID
-                  </div>
-                </>
-              )}
-            </div>
-            <input
-              ref={idDocInputRef}
-              type="file"
-              accept="image/*"
-              style={{ display: "none" }}
-              onChange={handleIdDocChange}
-            />
-          </div>
-
-          {/* Selfie upload */}
-          <div style={styles.fieldGroup}>
-            <label style={styles.label}>🤳 Selfie Photo</label>
-            <div
-              style={styles.uploadBox}
-              onClick={() => selfieInputRef.current?.click()}
-            >
-              {selfieFile ? (
-                <img
-                  src={selfieFile}
-                  alt="Selfie"
-                  style={{ maxHeight: 120, borderRadius: 6, borderRadius: "50%" }}
-                />
-              ) : (
-                <>
-                  <div style={{ fontSize: 32 }}>🤳</div>
-                  <div style={{ fontSize: 13, color: "#666", marginTop: 8 }}>
-                    Click to upload a clear selfie
-                  </div>
-                </>
-              )}
-            </div>
-            <input
-              ref={selfieInputRef}
-              type="file"
-              accept="image/*"
-              style={{ display: "none" }}
-              onChange={handleSelfieChange}
-            />
-          </div>
-
-          <div style={styles.idvStepsBox}>
-            <div style={styles.idvStep}>
-              <span style={styles.idvStepNum}>1</span>
-              Document liveness & authenticity check
-            </div>
-            <div style={styles.idvStep}>
-              <span style={styles.idvStepNum}>2</span>
-              Biometric face match
-            </div>
-            <div style={styles.idvStep}>
-              <span style={styles.idvStepNum}>3</span>
-              Name & DOB extraction
-            </div>
-            <div style={styles.idvStep}>
-              <span style={styles.idvStepNum}>4</span>
-              Verified status stored on account
-            </div>
-          </div>
-
-          <button
-            style={{ ...styles.btnPrimary, opacity: idVerifyLoading ? 0.7 : 1 }}
-            onClick={handleSubmitIdentity}
-            disabled={idVerifyLoading}
-          >
-            {idVerifyLoading ? "Submitting for review…" : "Submit for Verification"}
-          </button>
-          <button style={styles.btnLink} onClick={skipIdentity}>
-            Skip for now (NDA features will be locked)
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  // ─── Dashboard / Messenger ────────────────────────────────────────────────────
-  if (step === "dashboard" && user) {
-    return (
-      <div style={styles.appShell}>
-        {/* NDA Modal */}
-        {showNDAModal && currentConv && (
-          <div style={styles.modalOverlay}>
-            <div style={styles.modal}>
-              <div style={{ fontSize: 40, textAlign: "center", marginBottom: 8 }}>
-                📋
-              </div>
-              <h3 style={{ margin: "0 0 12px", textAlign: "center" }}>
-                Activate Confidential Mode
-              </h3>
-              <p style={{ fontSize: 13, color: "#555", lineHeight: 1.6, marginBottom: 16 }}>
-                By activating Confidential Mode, you and{" "}
-                <strong>{contactName(currentConv.with)}</strong> agree to be
-                bound by an international Non-Disclosure Agreement (NDA)
-                covering all messages in this conversation from this point
-                forward.
+        {/* ── SPLASH ── */}
+        {screen === "splash" && (
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 24 }}>
+            <div style={{ fontSize: 80, animation: "pulse 2s ease-in-out infinite" }}>🛡️</div>
+            <div>
+              <h1 style={{ fontSize: 36, fontWeight: 800, margin: 0, letterSpacing: -1 }}>
+                Confi
+              </h1>
+              <p style={{ margin: "4px 0 0", color: "#00c896", fontSize: 14, letterSpacing: 3, textTransform: "uppercase" }}>
+                Confidential Messaging
               </p>
-              <div style={styles.ndaTermsBox}>
-                <strong>Key Terms:</strong>
-                <ul style={{ paddingLeft: 18, margin: "8px 0 0", lineHeight: 1.7, fontSize: 13 }}>
-                  <li>All shared information is strictly confidential</li>
-                  <li>No disclosure to third parties without written consent</li>
-                  <li>Governed by international commercial law</li>
-                  <li>Breach subject to legal remedies and damages</li>
-                  <li>
-                    Signatures legally attributable via verified identity (ID:{" "}
-                    {user.identityStatus === "verified" ? "✅ Verified" : "❌ Unverified"})
-                  </li>
-                </ul>
-              </div>
-              <p style={{ fontSize: 11, color: "#999", marginBottom: 16 }}>
-                This agreement is digitally signed and timestamped. Your
-                verified identity makes this legally binding.
-              </p>
-              <div style={{ display: "flex", gap: 10 }}>
-                <button
-                  style={{ ...styles.btnSecondary, flex: 1 }}
-                  onClick={() => setShowNDAModal(false)}
-                >
-                  Cancel
-                </button>
-                <button
-                  style={{ ...styles.btnPrimary, flex: 1 }}
-                  onClick={confirmNDA}
-                >
-                  I Agree & Sign NDA
-                </button>
-              </div>
+            </div>
+            <div style={{ marginTop: 40 }}>
+              <Spinner />
             </div>
           </div>
         )}
 
-        {/* Sidebar */}
-        <div
-          style={{
-            ...styles.sidebar,
-            display: sidebarOpen ? "flex" : "none",
-          }}
-        >
-          {/* User header */}
-          <div style={styles.sidebarHeader}>
-            <Avatar src={user.avatar} name={user.displayName} size={38} />
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div
+        {/* ── WELCOME ── */}
+        {screen === "welcome" && (
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 24px", gap: 32 }}>
+            <div style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 72, marginBottom: 16 }}>🛡️</div>
+              <h1 style={{ fontSize: 32, fontWeight: 800, margin: 0, letterSpacing: -1 }}>
+                Welcome to Confi
+              </h1>
+              <p style={{ marginTop: 12, color: "rgba(255,255,255,0.6)", fontSize: 15, lineHeight: 1.6 }}>
+                Secure messaging with legally-binding confidentiality. Your identity. Your terms.
+              </p>
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 12, width: "100%" }}>
+              {[
+                { icon: "🔐", label: "End-to-end encrypted" },
+                { icon: "⚖️", label: "International NDA protection" },
+                { icon: "🪪", label: "Verified identity required" },
+                { icon: "🔑", label: "Biometric / PIN security" },
+              ].map((f) => (
+                <div key={f.label} style={{
+                  display: "flex", alignItems: "center", gap: 14,
+                  padding: "14px 18px", borderRadius: 14,
+                  background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)",
+                }}>
+                  <span style={{ fontSize: 22 }}>{f.icon}</span>
+                  <span style={{ fontSize: 14, color: "rgba(255,255,255,0.8)" }}>{f.label}</span>
+                </div>
+              ))}
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 12, width: "100%" }}>
+              <button onClick={() => { setAuthMode("signup"); setScreen("signup"); }} style={btnPrimary}>
+                Create Account
+              </button>
+              <button onClick={() => { setAuthMode("login"); setScreen("login"); }} style={btnSecondary}>
+                Sign In
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ── SIGNUP / LOGIN ── */}
+        {(screen === "signup" || screen === "login") && (
+          <div style={{ flex: 1, padding: "60px 24px 40px" }}>
+            <button onClick={() => setScreen("welcome")} style={backBtn}>← Back</button>
+            <h2 style={{ fontSize: 28, fontWeight: 800, margin: "0 0 6px" }}>
+              {screen === "signup" ? "Create Account" : "Welcome Back"}
+            </h2>
+            <p style={{ color: "rgba(255,255,255,0.5)", fontSize: 14, margin: "0 0 32px" }}>
+              {screen === "signup"
+                ? "Join Confi — your verified identity is your security."
+                : "Sign in to your secure Confi account."}
+            </p>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              {/* Email */}
+              <div>
+                <label style={labelStyle}>Email Address</label>
+                <input
+                  type="email" value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="you@example.com"
+                  style={inputStyle}
+                />
+              </div>
+
+              {/* Password */}
+              <div>
+                <label style={labelStyle}>Password {screen === "signup" && <span style={{ color: "rgba(255,255,255,0.4)", fontSize: 11 }}>(min 8 chars)</span>}</label>
+                <div style={{ position: "relative" }}>
+                  <input
+                    type={showPass ? "text" : "password"} value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="Secure password"
+                    style={{ ...inputStyle, paddingRight: 50 }}
+                  />
+                  <button
+                    onClick={() => setShowPass(!showPass)}
+                    style={{
+                      position: "absolute", right: 14, top: "50%", transform: "translateY(-50%)",
+                      background: "none", border: "none", cursor: "pointer", fontSize: 18, color: "rgba(255,255,255,0.5)",
+                    }}
+                  >{showPass ? "🙈" : "👁️"}</button>
+                </div>
+              </div>
+
+              {/* Phone */}
+              <div>
+                <label style={labelStyle}>Phone Number <span style={{ color: "rgba(255,255,255,0.4)", fontSize: 11 }}>(for OTP)</span></label>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <select
+                    value={countryCode}
+                    onChange={(e) => setCountryCode(e.target.value)}
+                    style={{ ...inputStyle, width: 90, flex: "none", paddingLeft: 8 }}
+                  >
+                    {COUNTRIES.map((c) => (
+                      <option key={c.code} value={c.code}>{c.code} {c.name}</option>
+                    ))}
+                  </select>
+                  <input
+                    type="tel" value={phone}
+                    onChange={(e) => setPhone(e.target.value.replace(/\D/g, ""))}
+                    placeholder="Phone number"
+                    style={{ ...inputStyle, flex: 1 }}
+                  />
+                </div>
+              </div>
+
+              {error && <ErrorBox msg={error} />}
+
+              <button
+                onClick={() => handleAuth(screen === "signup" ? "signup" : "login")}
+                disabled={loading}
+                style={{ ...btnPrimary, marginTop: 8 }}
+              >
+                {loading ? <Spinner /> : screen === "signup" ? "Continue with OTP →" : "Sign In with OTP →"}
+              </button>
+
+              <p style={{ textAlign: "center", fontSize: 13, color: "rgba(255,255,255,0.4)", margin: 0 }}>
+                {screen === "signup" ? "Already have an account? " : "Need an account? "}
+                <button
+                  onClick={() => { setError(""); setScreen(screen === "signup" ? "login" : "signup"); }}
+                  style={{ background: "none", border: "none", color: "#00c896", cursor: "pointer", fontSize: 13 }}
+                >
+                  {screen === "signup" ? "Sign In" : "Sign Up"}
+                </button>
+              </p>
+
+              <p style={{ textAlign: "center", fontSize: 11, color: "rgba(255,255,255,0.25)", lineHeight: 1.5 }}>
+                By continuing, you agree to Confi&apos;s Terms of Service and Privacy Policy. Your credentials are securely hashed and never stored in plain text.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* ── OTP VERIFICATION ── */}
+        {screen === "otp" && (
+          <div style={{ flex: 1, padding: "60px 24px 40px" }}>
+            <button onClick={() => setScreen(pendingAuthMode === "signup" ? "signup" : "login")} style={backBtn}>← Back</button>
+            <div style={{ textAlign: "center", marginBottom: 40 }}>
+              <div style={{ fontSize: 56, marginBottom: 16 }}>
+                {otpTarget === "email" ? "📧" : "📱"}
+              </div>
+              <h2 style={{ fontSize: 26, fontWeight: 800, margin: 0 }}>Verify Your Identity</h2>
+              <p style={{ color: "rgba(255,255,255,0.5)", fontSize: 14, marginTop: 8, lineHeight: 1.6 }}>
+                A 6-digit code was sent to<br />
+                <strong style={{ color: "#00c896" }}>{otpState?.contact}</strong>
+              </p>
+              {otpState && (
+                <div style={{
+                  display: "inline-flex", alignItems: "center", gap: 6, marginTop: 10,
+                  background: "rgba(255,165,0,0.1)", border: "1px solid rgba(255,165,0,0.3)",
+                  padding: "6px 14px", borderRadius: 20, fontSize: 12, color: "#ffb347",
+                }}>
+                  ⏱ Expires in {Math.max(0, Math.floor((otpState.expiresAt - Date.now()) / 1000))}s
+                </div>
+              )}
+            </div>
+
+            <OtpInput value={otpValue} onChange={setOtpValue} />
+
+            {error && <div style={{ marginTop: 16 }}><ErrorBox msg={error} /></div>}
+
+            <button
+              onClick={verifyOtp}
+              disabled={otpValue.length < 6}
+              style={{ ...btnPrimary, marginTop: 32, opacity: otpValue.length < 6 ? 0.5 : 1 }}
+            >
+              Verify & Continue
+            </button>
+
+            <div style={{ textAlign: "center", marginTop: 20 }}>
+              <p style={{ fontSize: 13, color: "rgba(255,255,255,0.4)" }}>Didn&apos;t receive a code?</p>
+              <button
+                onClick={() => sendOtp(otpTarget, pendingAuthMode)}
+                disabled={otpCooldown > 0}
                 style={{
-                  fontWeight: 600,
-                  fontSize: 14,
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
+                  background: "none", border: "none", cursor: otpCooldown > 0 ? "default" : "pointer",
+                  color: otpCooldown > 0 ? "rgba(255,255,255,0.3)" : "#00c896", fontSize: 14, fontWeight: 600,
                 }}
               >
-                {user.displayName}
-              </div>
-              <VerifiedBadge status={user.identityStatus} />
+                {otpCooldown > 0 ? `Resend in ${otpCooldown}s` : "Resend Code"}
+              </button>
             </div>
-            <button
-              style={styles.iconBtn}
-              onClick={logout}
-              title="Sign out"
-            >
-              🚪
+
+            <div style={{
+              marginTop: 24, padding: "12px 16px", borderRadius: 12,
+              background: "rgba(0,200,150,0.06)", border: "1px solid rgba(0,200,150,0.15)",
+              fontSize: 12, color: "rgba(255,255,255,0.5)", textAlign: "center", lineHeight: 1.6,
+            }}>
+              🔒 This OTP verifies your identity before any confidentiality agreement can be created under your name.
+            </div>
+          </div>
+        )}
+
+        {/* ── PROFILE CREATION ── */}
+        {screen === "profile" && (
+          <div style={{ flex: 1, padding: "60px 24px 40px" }}>
+            <h2 style={{ fontSize: 28, fontWeight: 800, margin: "0 0 6px" }}>Create Your Profile</h2>
+            <p style={{ color: "rgba(255,255,255,0.5)", fontSize: 14, margin: "0 0 32px" }}>
+              This identity will be associated with all your confidential agreements.
+            </p>
+
+            {/* Avatar selection */}
+            <div style={{ marginBottom: 28 }}>
+              <label style={{ ...labelStyle, marginBottom: 12, display: "block" }}>Choose Avatar</label>
+              <div style={{ textAlign: "center", marginBottom: 16 }}>
+                <div style={{
+                  width: 80, height: 80, borderRadius: "50%", fontSize: 44,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  background: "linear-gradient(135deg,rgba(0,200,150,0.2),rgba(100,100,255,0.2))",
+                  border: "3px solid #00c896", margin: "0 auto",
+                }}>
+                  {selectedAvatar}
+                </div>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 10 }}>
+                {AVATARS.map((av) => (
+                  <button
+                    key={av}
+                    onClick={() => setSelectedAvatar(av)}
+                    style={{
+                      height: 52, borderRadius: 12, fontSize: 26, border: "2px solid",
+                      borderColor: selectedAvatar === av ? "#00c896" : "rgba(255,255,255,0.1)",
+                      background: selectedAvatar === av ? "rgba(0,200,150,0.15)" : "rgba(255,255,255,0.04)",
+                      cursor: "pointer", transition: "all 0.15s",
+                    }}
+                  >{av}</button>
+                ))}
+              </div>
+            </div>
+
+            {/* Display name */}
+            <div style={{ marginBottom: 20 }}>
+              <label style={labelStyle}>Display Name <span style={{ color: "rgba(255,255,255,0.4)", fontSize: 11 }}>(visible to others)</span></label>
+              <input
+                type="text" value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                placeholder="Your name or alias"
+                maxLength={32}
+                style={inputStyle}
+              />
+              <p style={{ fontSize: 11, color: "rgba(255,255,255,0.3)", margin: "4px 0 0" }}>
+                {displayName.length}/32 — this name will appear on confidentiality agreements
+              </p>
+            </div>
+
+            {/* Identity summary */}
+            <div style={{
+              padding: "14px 18px", borderRadius: 14,
+              background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)",
+              marginBottom: 20, fontSize: 13, color: "rgba(255,255,255,0.6)", lineHeight: 1.8,
+            }}>
+              <div>📧 <strong style={{ color: "#fff" }}>{email}</strong></div>
+              <div>📱 <strong style={{ color: "#fff" }}>{countryCode}{phone}</strong></div>
+              <div>✅ <span style={{ color: "#00c896" }}>Identity verified via OTP</span></div>
+            </div>
+
+            {error && <ErrorBox msg={error} />}
+
+            <button onClick={saveProfile} style={btnPrimary}>
+              Save Profile & Continue →
             </button>
           </div>
+        )}
 
-          {/* Identity verification prompt */}
-          {user.identityStatus !== "verified" && (
-            <div
-              style={styles.idvBanner}
-              onClick={() => setStep("identity")}
-            >
-              {user.identityStatus === "pending" ? (
-                <>⏳ Identity verification in progress — NDA features unlock soon</>
-              ) : (
-                <>🪪 Verify your identity to unlock NDA features →</>
-              )}
+        {/* ── PIN SETUP ── */}
+        {screen === "pin-setup" && (
+          <div style={{ flex: 1, padding: "60px 24px 40px", textAlign: "center" }}>
+            <div style={{ fontSize: 52, marginBottom: 16 }}>
+              {pinStep === "enter" ? "🔐" : "✅"}
             </div>
-          )}
+            <h2 style={{ fontSize: 26, fontWeight: 800, margin: 0 }}>
+              {pinStep === "enter" ? "Set App PIN" : "Confirm PIN"}
+            </h2>
+            <p style={{ color: "rgba(255,255,255,0.5)", fontSize: 14, marginTop: 8, marginBottom: 0 }}>
+              {pinStep === "enter"
+                ? "This PIN protects your app and conversations."
+                : "Enter the same PIN again to confirm."}
+            </p>
 
-          {/* Conversation list */}
-          <div style={{ flex: 1, overflowY: "auto" }}>
-            {conversations.map((conv) => {
-              const lastMsg = conv.messages[conv.messages.length - 1];
-              const name = contactName(conv.with);
-              return (
-                <div
-                  key={conv.id}
-                  style={{
-                    ...styles.convItem,
-                    background:
-                      activeConv === conv.id ? "#f0eeff" : "transparent",
-                    borderLeft:
-                      activeConv === conv.id
-                        ? "3px solid #6c63ff"
-                        : "3px solid transparent",
-                  }}
-                  onClick={() => {
-                    setActiveConv(conv.id);
-                    if (window.innerWidth < 700) setSidebarOpen(false);
-                  }}
+            <PinDots value={pinValue} max={6} />
+            <PinPad value={pinValue} onChange={setPinValue} maxLen={6} />
+
+            {pinError && <div style={{ marginTop: 12 }}><ErrorBox msg={pinError} /></div>}
+
+            <button
+              onClick={handlePinSetup}
+              disabled={pinValue.length < 4}
+              style={{ ...btnPrimary, marginTop: 24, opacity: pinValue.length < 4 ? 0.5 : 1 }}
+            >
+              {pinStep === "enter" ? "Next →" : "Confirm PIN"}
+            </button>
+
+            <button onClick={skipPin} style={{
+              background: "none", border: "none", color: "rgba(255,255,255,0.4)",
+              cursor: "pointer", fontSize: 13, marginTop: 16, display: "block", width: "100%",
+            }}>
+              Skip for now
+            </button>
+
+            <div style={{
+              marginTop: 20, padding: "10px 14px", borderRadius: 10,
+              background: "rgba(255,165,0,0.08)", border: "1px solid rgba(255,165,0,0.2)",
+              fontSize: 11, color: "rgba(255,200,100,0.7)", lineHeight: 1.6,
+            }}>
+              ⚠️ You&apos;ll need this PIN every time you open Confi. Store it safely.
+            </div>
+          </div>
+        )}
+
+        {/* ── PIN LOCK ── */}
+        {screen === "pin-lock" && (
+          <div style={{ flex: 1, padding: "60px 24px 40px", textAlign: "center" }}>
+            <div style={{
+              width: 72, height: 72, borderRadius: "50%", fontSize: 36,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              background: "linear-gradient(135deg,rgba(0,200,150,0.2),rgba(100,100,255,0.2))",
+              border: "3px solid #00c896", margin: "0 auto 16px",
+            }}>
+              {session?.avatar || "🛡️"}
+            </div>
+            <h2 style={{ fontSize: 24, fontWeight: 800, margin: 0 }}>
+              {session?.displayName || "Welcome back"}
+            </h2>
+            <p style={{ color: "rgba(255,255,255,0.5)", fontSize: 13, marginTop: 4, marginBottom: 0 }}>
+              Enter your PIN to unlock Confi
+            </p>
+
+            {pinLocked ? (
+              <div style={{ marginTop: 40, padding: "20px", borderRadius: 14, background: "rgba(255,100,100,0.1)", border: "1px solid rgba(255,100,100,0.3)" }}>
+                <div style={{ fontSize: 36 }}>🚫</div>
+                <p style={{ color: "#ff6b6b", marginTop: 8, fontSize: 14 }}>
+                  Too many failed attempts.<br />
+                  Locked for {Math.max(0, Math.ceil((pinLockUntil - Date.now()) / 1000))} seconds.
+                </p>
+              </div>
+            ) : (
+              <>
+                <PinDots value={pinValue} max={6} />
+                <PinPad value={pinValue} onChange={setPinValue} maxLen={6} />
+
+                {pinError && <div style={{ marginTop: 12 }}><ErrorBox msg={pinError} /></div>}
+
+                <button
+                  onClick={verifyPinLock}
+                  disabled={pinValue.length < 4}
+                  style={{ ...btnPrimary, marginTop: 24, opacity: pinValue.length < 4 ? 0.5 : 1 }}
                 >
-                  <Avatar src={conv.withAvatar} name={name} size={42} />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <span style={{ fontWeight: 600, fontSize: 14 }}>{name}</span>
-                      {conv.ndaActive && (
-                        <span style={styles.ndaBadge}>🔒 NDA</span>
-                      )}
-                    </div>
-                    <div
-                      style={{
-                        fontSize: 12,
-                        color: "#888",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                        marginTop: 2,
-                      }}
-                    >
-                      {lastMsg
-                        ? lastMsg.from === user.email
-                          ? `You: ${lastMsg.text}`
-                          : lastMsg.text
-                        : "Start a conversation"}
-                    </div>
+                  Unlock →
+                </button>
+              </>
+            )}
+
+            <button onClick={logout} style={{
+              background: "none", border: "none", color: "rgba(255,255,255,0.3)",
+              cursor: "pointer", fontSize: 12, marginTop: 24, display: "block", width: "100%",
+            }}>
+              Not you? Sign out
+            </button>
+          </div>
+        )}
+
+        {/* ── HOME ── */}
+        {screen === "home" && session && (
+          <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+            {/* Header */}
+            <div style={{
+              padding: "20px 24px 16px",
+              borderBottom: "1px solid rgba(255,255,255,0.08)",
+              background: "rgba(0,0,0,0.3)", backdropFilter: "blur(20px)",
+              position: "sticky", top: 0, zIndex: 10,
+            }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <div style={{ fontSize: 32 }}>{session.avatar}</div>
+                  <div>
+                    <h1 style={{ margin: 0, fontSize: 20, fontWeight: 700 }}>Confi</h1>
+                    <p style={{ margin: 0, fontSize: 12, color: "rgba(255,255,255,0.5)" }}>
+                      Confidential Messaging
+                    </p>
                   </div>
                 </div>
-              );
-            })}
-          </div>
-
-          {/* Profile settings link */}
-          <div
-            style={styles.sidebarFooter}
-            onClick={() => setStep("profile")}
-          >
-            ⚙️ Edit Profile
-          </div>
-        </div>
-
-        {/* Chat area */}
-        <div style={styles.chatArea}>
-          {!activeConv ? (
-            <div style={styles.emptyChat}>
-              <div style={{ fontSize: 64 }}>💬</div>
-              <h2>Welcome to Confi</h2>
-              <p style={{ color: "#888", maxWidth: 320, textAlign: "center" }}>
-                Select a conversation to start messaging securely. Activate
-                Confidential Mode to cover the conversation under NDA.
-              </p>
-              {user.identityStatus !== "verified" && (
-                <button
-                  style={{ ...styles.btnPrimary, marginTop: 16 }}
-                  onClick={() => setStep("identity")}
-                >
-                  Complete Identity Verification
-                </button>
-              )}
+                <div style={{ display: "flex", gap: 8 }}>
+                  <div style={{
+                    width: 8, height: 8, borderRadius: "50%", background: "#00c896",
+                    boxShadow: "0 0 8px #00c896", marginTop: 4,
+                  }} />
+                </div>
+              </div>
             </div>
-          ) : (
-            <>
-              {/* Chat header */}
-              <div style={styles.chatHeader}>
-                <button
-                  style={{ ...styles.iconBtn, marginRight: 8 }}
-                  onClick={() => setSidebarOpen(true)}
-                >
-                  ☰
-                </button>
-                <Avatar
-                  src={currentConv?.withAvatar}
-                  name={contactName(currentConv?.with ?? "")}
-                  size={36}
-                />
-                <div style={{ flex: 1, marginLeft: 10 }}>
-                  <div style={{ fontWeight: 600, fontSize: 15 }}>
-                    {contactName(currentConv?.with ?? "")}
+
+            {/* Identity Card */}
+            <div style={{ padding: "20px 24px" }}>
+              <div style={{
+                background: "linear-gradient(135deg,rgba(0,200,150,0.12),rgba(100,100,255,0.08))",
+                border: "1px solid rgba(0,200,150,0.2)", borderRadius: 20, padding: "20px 24px",
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 16 }}>
+                  <div style={{
+                    width: 60, height: 60, borderRadius: "50%", fontSize: 32,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    background: "rgba(0,200,150,0.15)", border: "2px solid #00c896",
+                  }}>
+                    {session.avatar}
                   </div>
-                  {currentConv?.ndaActive && (
-                    <div style={{ fontSize: 11, color: "#6c63ff" }}>
-                      🔒 Confidential Mode — NDA Active since{" "}
-                      {currentConv.ndaSignedAt
-                        ? new Date(currentConv.ndaSignedAt).toLocaleString()
-                        : ""}
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 18 }}>{session.displayName}</div>
+                    <div style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>{session.email}</div>
+                    <div style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>{session.phone}</div>
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  {[
+                    { icon: "✅", label: "Identity Verified" },
+                    { icon: "🔐", label: session.pinHash ? "PIN Active" : "No PIN" },
+                    { icon: "⚖️", label: "NDA Ready" },
+                  ].map((b) => (
+                    <div key={b.label} style={{
+                      padding: "5px 12px", borderRadius: 20, fontSize: 11, fontWeight: 600,
+                      background: "rgba(0,200,150,0.1)", border: "1px solid rgba(0,200,150,0.25)",
+                      color: "#00c896",
+                    }}>
+                      {b.icon} {b.label}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Features teaser */}
+            <div style={{ padding: "0 24px", flex: 1 }}>
+              <h3 style={{ fontSize: 14, fontWeight: 600, color: "rgba(255,255,255,0.5)", letterSpacing: 1, textTransform: "uppercase", margin: "0 0 14px" }}>
+                Your Secure Space
+              </h3>
+              {[
+                { icon: "💬", title: "Confidential Chats", desc: "Start a legally-protected conversation", badge: "Coming soon", color: "#00c896" },
+                { icon: "📜", title: "Active NDAs", desc: "View your confidentiality agreements", badge: "0 active", color: "#6464ff" },
+                { icon: "🔍", title: "Find People", desc: "Search verified Confi users", badge: "Soon", color: "#ff9500" },
+                { icon: "⚙️", title: "Security Settings", desc: "Manage PIN, biometrics & sessions", badge: null, color: "#ff6b6b" },
+              ].map((item) => (
+                <div key={item.title} style={{
+                  display: "flex", alignItems: "center", gap: 16, padding: "16px 18px",
+                  borderRadius: 16, marginBottom: 10,
+                  background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)",
+                  cursor: "pointer", transition: "background 0.15s",
+                }}
+                  onMouseEnter={(e) => { (e.currentTarget.style.background = "rgba(255,255,255,0.07)"); }}
+                  onMouseLeave={(e) => { (e.currentTarget.style.background = "rgba(255,255,255,0.03)"); }}
+                >
+                  <div style={{
+                    width: 44, height: 44, borderRadius: 12, fontSize: 22,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    background: `${item.color}18`, border: `1px solid ${item.color}30`,
+                  }}>
+                    {item.icon}
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 600, fontSize: 15 }}>{item.title}</div>
+                    <div style={{ fontSize: 12, color: "rgba(255,255,255,0.45)", marginTop: 2 }}>{item.desc}</div>
+                  </div>
+                  {item.badge && (
+                    <div style={{
+                      padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 600,
+                      background: `${item.color}18`, color: item.color, border: `1px solid ${item.color}30`,
+                    }}>
+                      {item.badge}
                     </div>
                   )}
+                  <div style={{ color: "rgba(255,255,255,0.2)", fontSize: 18 }}>›</div>
                 </div>
-                {currentConv?.ndaActive ? (
-                  <button
-                    style={styles.ndaOffBtn}
-                    onClick={() => deactivateNDA(currentConv!.id)}
-                  >
-                    🔓 Deactivate NDA
-                  </button>
-                ) : (
-                  <button
-                    style={styles.ndaOnBtn}
-                    onClick={() => activateNDA(currentConv!.id)}
-                    title={
-                      user.identityStatus !== "verified"
-                        ? "Verify your identity first"
-                        : "Activate confidential NDA mode"
-                    }
-                  >
-                    🔒 Activate NDA
-                  </button>
-                )}
-              </div>
+              ))}
+            </div>
 
-              {/* Messages */}
-              <div style={styles.messages}>
-                {currentConv?.messages.map((msg) => {
-                  if (msg.from === "system") {
-                    return (
-                      <div key={msg.id} style={styles.systemMsg}>
-                        {msg.text}
-                      </div>
-                    );
-                  }
-                  const isMe = msg.from === user.email;
-                  return (
-                    <div
-                      key={msg.id}
-                      style={{
-                        display: "flex",
-                        justifyContent: isMe ? "flex-end" : "flex-start",
-                        marginBottom: 8,
-                        gap: 8,
-                        alignItems: "flex-end",
-                      }}
-                    >
-                      {!isMe && (
-                        <Avatar
-                          src={currentConv?.withAvatar}
-                          name={contactName(msg.from)}
-                          size={28}
-                        />
-                      )}
-                      <div>
-                        <div
-                          style={{
-                            ...styles.bubble,
-                            background: isMe
-                              ? msg.confidential
-                                ? "#4527a0"
-                                : "#6c63ff"
-                              : msg.confidential
-                              ? "#f3e5f5"
-                              : "#f0f0f0",
-                            color: isMe ? "#fff" : "#222",
-                            borderRadius: isMe
-                              ? "18px 18px 4px 18px"
-                              : "18px 18px 18px 4px",
-                          }}
-                        >
-                          {msg.confidential && (
-                            <span style={{ fontSize: 10, opacity: 0.7, display: "block", marginBottom: 2 }}>
-                              🔒 NDA protected
-                            </span>
-                          )}
-                          {msg.text}
-                        </div>
-                        <div
-                          style={{
-                            fontSize: 10,
-                            color: "#bbb",
-                            marginTop: 2,
-                            textAlign: isMe ? "right" : "left",
-                          }}
-                        >
-                          {formatTime(msg.timestamp)}
-                        </div>
-                      </div>
-                      {isMe && (
-                        <Avatar src={user.avatar} name={user.displayName} size={28} />
-                      )}
-                    </div>
-                  );
-                })}
-                <div ref={messagesEndRef} />
+            {/* Session info */}
+            <div style={{ padding: "16px 24px", borderTop: "1px solid rgba(255,255,255,0.06)" }}>
+              <div style={{
+                padding: "12px 16px", borderRadius: 12,
+                background: "rgba(255,255,255,0.03)", fontSize: 11, color: "rgba(255,255,255,0.3)",
+                lineHeight: 1.8,
+              }}>
+                <div>🕐 Session started: {timeAgo(new Date(session.createdAt).getTime())}</div>
+                <div>🔑 Token: {session.sessionToken.slice(0, 8)}…{session.sessionToken.slice(-8)}</div>
+                <div>📱 {session.phone}</div>
               </div>
-
-              {/* Input */}
-              <div
-                style={{
-                  ...styles.inputRow,
-                  background: currentConv?.ndaActive ? "#f3e5f5" : "#fff",
-                  borderTop: currentConv?.ndaActive
-                    ? "2px solid #9c27b0"
-                    : "1px solid #eee",
-                }}
-              >
-                {currentConv?.ndaActive && (
-                  <span style={{ fontSize: 16 }}>🔒</span>
-                )}
-                <input
-                  style={styles.msgInput}
-                  type="text"
-                  placeholder={
-                    currentConv?.ndaActive
-                      ? "Type a confidential message…"
-                      : "Type a message…"
-                  }
-                  value={newMessage}
-                  onChange={(e) => setNewMessage(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                      sendMessage();
-                    }
-                  }}
-                />
+              <button onClick={logout} style={{ ...btnSecondary, marginTop: 12, fontSize: 14 }}>
+                Sign Out
+              </button>
+              {!session.pinHash && (
                 <button
-                  style={{
-                    ...styles.sendBtn,
-                    background: currentConv?.ndaActive ? "#9c27b0" : "#6c63ff",
-                  }}
-                  onClick={sendMessage}
-                  disabled={!newMessage.trim()}
+                  onClick={() => { setPinStep("enter"); setPinValue(""); setPinError(""); setScreen("pin-setup"); }}
+                  style={{ ...btnPrimary, marginTop: 8, fontSize: 14 }}
                 >
-                  ➤
+                  🔐 Set PIN Lock
                 </button>
-              </div>
-            </>
-          )}
-        </div>
-      </div>
-    );
-  }
+              )}
+            </div>
+          </div>
+        )}
 
-  return null;
+      </div>
+    </div>
+  );
 }
 
-// ─── Styles ───────────────────────────────────────────────────────────────────
-const styles: Record<string, React.CSSProperties> = {
-  centered: {
-    minHeight: "100vh",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
-    padding: 16,
-  },
-  card: {
-    background: "#fff",
-    borderRadius: 16,
-    padding: 32,
-    width: "100%",
-    maxWidth: 420,
-    boxShadow: "0 20px 60px rgba(0,0,0,0.15)",
-    display: "flex",
-    flexDirection: "column",
-    gap: 0,
-  },
-  logo: {
-    fontSize: 56,
-    marginBottom: 8,
-  },
-  appName: {
-    margin: 0,
-    fontSize: 32,
-    fontWeight: 800,
-    background: "linear-gradient(135deg, #6c63ff, #e91e8c)",
-    WebkitBackgroundClip: "text",
-    WebkitTextFillColor: "transparent",
-  },
-  tagline: {
-    margin: "8px 0 0",
-    color: "#666",
-    fontSize: 14,
-    lineHeight: 1.5,
-  },
-  formTitle: {
-    margin: "0 0 6px",
-    fontSize: 24,
-    fontWeight: 700,
-    color: "#1a1a2e",
-  },
-  formSubtitle: {
-    margin: "0 0 20px",
-    fontSize: 13,
-    color: "#777",
-    lineHeight: 1.5,
-  },
-  fieldGroup: {
-    display: "flex",
-    flexDirection: "column",
-    gap: 6,
-    marginBottom: 16,
-  },
-  label: {
-    fontSize: 13,
-    fontWeight: 600,
-    color: "#444",
-  },
-  input: {
-    border: "1.5px solid #e0e0e0",
-    borderRadius: 10,
-    padding: "11px 14px",
-    fontSize: 15,
-    outline: "none",
-    transition: "border-color 0.2s",
-    color: "#1a1a2e",
-    background: "#fafafa",
-    width: "100%",
-    boxSizing: "border-box",
-  },
-  btnPrimary: {
-    background: "linear-gradient(135deg, #6c63ff, #9c27b0)",
-    color: "#fff",
-    border: "none",
-    borderRadius: 10,
-    padding: "13px 20px",
-    fontSize: 15,
-    fontWeight: 600,
-    cursor: "pointer",
-    width: "100%",
-    marginBottom: 10,
-    transition: "opacity 0.2s",
-  },
-  btnSecondary: {
-    background: "#f0f0f0",
-    color: "#444",
-    border: "none",
-    borderRadius: 10,
-    padding: "13px 20px",
-    fontSize: 15,
-    fontWeight: 600,
-    cursor: "pointer",
-    width: "100%",
-    marginBottom: 10,
-  },
-  btnLink: {
-    background: "none",
-    border: "none",
-    color: "#6c63ff",
-    fontSize: 13,
-    cursor: "pointer",
-    padding: "4px 0",
-    textDecoration: "underline",
-    textAlign: "center" as const,
-    width: "100%",
-  },
-  errorBox: {
-    background: "#ffebee",
-    border: "1px solid #ef9a9a",
-    color: "#c62828",
-    borderRadius: 8,
-    padding: "10px 14px",
-    fontSize: 13,
-    marginBottom: 14,
-    lineHeight: 1.4,
-  },
-  featureList: {
-    marginTop: 24,
-    display: "flex",
-    flexDirection: "column",
-    gap: 8,
-  },
-  featureItem: {
-    fontSize: 13,
-    color: "#555",
-    padding: "8px 12px",
-    background: "#f8f8ff",
-    borderRadius: 8,
-  },
-  uploadBox: {
-    border: "2px dashed #ccc",
-    borderRadius: 10,
-    padding: 20,
-    textAlign: "center",
-    cursor: "pointer",
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    justifyContent: "center",
-    minHeight: 100,
-    background: "#fafafa",
-    transition: "border-color 0.2s",
-  },
-  idvInfoBox: {
-    background: "#e8eaf6",
-    border: "1px solid #c5cae9",
-    borderRadius: 10,
-    padding: 14,
-    fontSize: 13,
-    color: "#3949ab",
-    marginBottom: 20,
-    lineHeight: 1.5,
-  },
-  idvStepsBox: {
-    background: "#f8f9fa",
-    borderRadius: 10,
-    padding: 14,
-    marginBottom: 20,
-    display: "flex",
-    flexDirection: "column",
-    gap: 10,
-  },
-  idvStep: {
-    display: "flex",
-    alignItems: "center",
-    gap: 10,
-    fontSize: 13,
-    color: "#444",
-  },
-  idvStepNum: {
-    background: "#6c63ff",
-    color: "#fff",
-    borderRadius: "50%",
-    width: 22,
-    height: 22,
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    fontSize: 12,
-    fontWeight: 700,
-    flexShrink: 0,
-  },
-  // App shell
-  appShell: {
-    display: "flex",
-    height: "100vh",
-    overflow: "hidden",
-    background: "#f5f5f5",
-    fontFamily: "'Segoe UI', system-ui, sans-serif",
-  },
-  sidebar: {
-    width: 320,
-    minWidth: 280,
-    background: "#fff",
-    borderRight: "1px solid #eee",
-    display: "flex",
-    flexDirection: "column",
-    flexShrink: 0,
-    height: "100vh",
-    overflowY: "hidden",
-  },
-  sidebarHeader: {
-    display: "flex",
-    alignItems: "center",
-    gap: 10,
-    padding: "16px 14px",
-    borderBottom: "1px solid #f0f0f0",
-    background: "#fafafa",
-  },
-  sidebarFooter: {
-    padding: "12px 16px",
-    borderTop: "1px solid #f0f0f0",
-    fontSize: 13,
-    color: "#888",
-    cursor: "pointer",
-    textAlign: "center",
-  },
-  iconBtn: {
-    background: "none",
-    border: "none",
-    fontSize: 20,
-    cursor: "pointer",
-    padding: 4,
-    borderRadius: 6,
-    lineHeight: 1,
-  },
-  convItem: {
-    display: "flex",
-    alignItems: "center",
-    gap: 12,
-    padding: "12px 14px",
-    cursor: "pointer",
-    transition: "background 0.15s",
-    borderBottom: "1px solid #f8f8f8",
-  },
-  ndaBadge: {
-    fontSize: 10,
-    background: "#f3e5f5",
-    color: "#7b1fa2",
-    padding: "2px 6px",
-    borderRadius: 99,
-    fontWeight: 600,
-    whiteSpace: "nowrap",
-  },
-  idvBanner: {
-    background: "linear-gradient(135deg, #fff3e0, #fce4ec)",
-    padding: "10px 14px",
-    fontSize: 12,
-    color: "#e65100",
-    cursor: "pointer",
-    borderBottom: "1px solid #ffcc80",
-    fontWeight: 500,
-  },
-  chatArea: {
-    flex: 1,
-    display: "flex",
-    flexDirection: "column",
-    height: "100vh",
-    overflow: "hidden",
-  },
-  chatHeader: {
-    display: "flex",
-    alignItems: "center",
-    padding: "12px 16px",
-    background: "#fff",
-    borderBottom: "1px solid #eee",
-    gap: 8,
-    flexShrink: 0,
-  },
-  messages: {
-    flex: 1,
-    overflowY: "auto",
-    padding: "16px",
-    display: "flex",
-    flexDirection: "column",
-  },
-  bubble: {
-    maxWidth: 300,
-    padding: "10px 14px",
-    fontSize: 14,
-    lineHeight: 1.5,
-    wordBreak: "break-word",
-  },
-  systemMsg: {
-    background: "#fff8e1",
-    border: "1px solid #ffe082",
-    borderRadius: 10,
-    padding: "10px 14px",
-    fontSize: 12,
-    color: "#f57f17",
-    textAlign: "center",
-    margin: "8px auto",
-    maxWidth: 480,
-    lineHeight: 1.5,
-  },
-  inputRow: {
-    display: "flex",
-    alignItems: "center",
-    gap: 10,
-    padding: "12px 16px",
-    flexShrink: 0,
-  },
-  msgInput: {
-    flex: 1,
-    border: "1.5px solid #e0e0e0",
-    borderRadius: 24,
-    padding: "10px 16px",
-    fontSize: 14,
-    outline: "none",
-    background: "#fafafa",
-  },
-  sendBtn: {
-    border: "none",
-    color: "#fff",
-    borderRadius: "50%",
-    width: 42,
-    height: 42,
-    fontSize: 16,
-    cursor: "pointer",
-    flexShrink: 0,
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  emptyChat: {
-    flex: 1,
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    justifyContent: "center",
-    color: "#444",
-    gap: 8,
-  },
-  ndaOnBtn: {
-    background: "linear-gradient(135deg, #6c63ff, #9c27b0)",
-    color: "#fff",
-    border: "none",
-    borderRadius: 20,
-    padding: "7px 14px",
-    fontSize: 12,
-    fontWeight: 600,
-    cursor: "pointer",
-    whiteSpace: "nowrap",
-  },
-  ndaOffBtn: {
-    background: "#fff",
-    color: "#9c27b0",
-    border: "2px solid #9c27b0",
-    borderRadius: 20,
-    padding: "7px 14px",
-    fontSize: 12,
-    fontWeight: 600,
-    cursor: "pointer",
-    whiteSpace: "nowrap",
-  },
-  // NDA Modal
-  modalOverlay: {
-    position: "fixed",
-    inset: 0,
-    background: "rgba(0,0,0,0.55)",
-    zIndex: 1000,
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 16,
-  },
-  modal: {
-    background: "#fff",
-    borderRadius: 16,
-    padding: 28,
-    maxWidth: 480,
-    width: "100%",
-    boxShadow: "0 20px 60px rgba(0,0,0,0.3)",
-  },
-  ndaTermsBox: {
-    background: "#f8f9fa",
-    border: "1px solid #e0e0e0",
-    borderRadius: 10,
-    padding: 14,
-    fontSize: 13,
-    marginBottom: 14,
-    color: "#333",
-  },
+// ─── Shared style objects ──────────────────────────────────────────────────────
+function ErrorBox({ msg }: { msg: string }) {
+  return (
+    <div style={{
+      padding: "12px 16px", borderRadius: 12,
+      background: "rgba(255,100,100,0.1)", border: "1px solid rgba(255,100,100,0.3)",
+      color: "#ff8080", fontSize: 13, lineHeight: 1.5,
+    }}>
+      ⚠️ {msg}
+    </div>
+  );
+}
+
+const btnPrimary: React.CSSProperties = {
+  width: "100%", padding: "16px", borderRadius: 14, border: "none",
+  background: "linear-gradient(135deg,#00c896,#00a07a)", color: "#fff",
+  fontSize: 16, fontWeight: 700, cursor: "pointer", display: "flex",
+  alignItems: "center", justifyContent: "center", gap: 8,
+  boxShadow: "0 4px 24px rgba(0,200,150,0.3)", transition: "opacity 0.2s",
+};
+
+const btnSecondary: React.CSSProperties = {
+  width: "100%", padding: "14px", borderRadius: 14,
+  border: "1px solid rgba(255,255,255,0.15)", background: "rgba(255,255,255,0.05)",
+  color: "#fff", fontSize: 16, fontWeight: 600, cursor: "pointer",
+};
+
+const inputStyle: React.CSSProperties = {
+  width: "100%", padding: "14px 16px", borderRadius: 12, border: "1px solid rgba(255,255,255,0.15)",
+  background: "rgba(255,255,255,0.06)", color: "#fff", fontSize: 15,
+  outline: "none", boxSizing: "border-box", transition: "border-color 0.2s",
+};
+
+const labelStyle: React.CSSProperties = {
+  fontSize: 13, fontWeight: 600, color: "rgba(255,255,255,0.7)",
+  display: "block", marginBottom: 8,
+};
+
+const backBtn: React.CSSProperties = {
+  background: "none", border: "none", color: "rgba(255,255,255,0.5)",
+  cursor: "pointer", fontSize: 14, padding: "0 0 20px", display: "block",
 };

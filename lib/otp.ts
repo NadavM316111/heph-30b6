@@ -1,45 +1,112 @@
-// OTP generation and verification helpers.
-// Twilio is NOT available (no API key in env), so we simulate SMS delivery.
-// In production: plug in Twilio Verify API here.
+/**
+ * OTP management utilities for Confi.
+ * In production, OTPs would be sent via server-side SMS/email.
+ * This manages the client-side state and validation.
+ */
 
-export function generateOTP(): string {
+export interface OtpRecord {
+  code: string;
+  contact: string;
+  type: "email" | "phone";
+  createdAt: number;
+  expiresAt: number;
+  attempts: number;
+  verified: boolean;
+}
+
+const OTP_KEY = "confi_otp_temp";
+const OTP_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const MAX_ATTEMPTS = 3;
+
+export function generateOtpCode(length = 6): string {
   const digits = "0123456789";
-  let otp = "";
-  for (let i = 0; i < 6; i++) {
-    otp += digits[Math.floor(Math.random() * 10)];
+  let result = "";
+  const arr = new Uint8Array(length);
+  crypto.getRandomValues(arr);
+  for (let i = 0; i < length; i++) {
+    result += digits[arr[i] % 10];
   }
-  return otp;
+  return result;
 }
 
-export function otpExpiresAt(): number {
-  return Date.now() + 10 * 60 * 1000; // 10 minutes
-}
-
-export function isOTPExpired(expiresAt: number): boolean {
-  return Date.now() > expiresAt;
-}
-
-// Simulated SMS — logs to console in dev, returns the OTP so UI can display it
-export async function sendOTPviaSMS(phone: string, otp: string): Promise<{ ok: boolean; message: string; devOtp?: string }> {
-  // No Twilio key available — simulate delivery
-  console.log(`[CONFI OTP] Sending OTP ${otp} to ${phone}`);
-  
-  // In production, replace with:
-  // const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
-  // await client.verify.v2.services(process.env.TWILIO_SERVICE_SID).verifications.create({ to: phone, channel: 'sms' });
-  
-  return {
-    ok: true,
-    message: `OTP sent to ${phone} (simulated — check server logs)`,
-    devOtp: otp, // Remove in production!
+export function createOtpRecord(contact: string, type: "email" | "phone"): OtpRecord {
+  const code = generateOtpCode(6);
+  const record: OtpRecord = {
+    code,
+    contact,
+    type,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + OTP_TTL_MS,
+    attempts: 0,
+    verified: false,
   };
+  // Store temporarily (in real app this lives server-side with the hash)
+  sessionStorage.setItem(OTP_KEY, JSON.stringify(record));
+  return record;
 }
 
-export async function sendOTPviaEmail(email: string, otp: string): Promise<{ ok: boolean; message: string; devOtp?: string }> {
-  console.log(`[CONFI OTP] Sending OTP ${otp} to ${email}`);
-  return {
-    ok: true,
-    message: `OTP sent to ${email} (simulated — check server logs)`,
-    devOtp: otp,
-  };
+export function getOtpRecord(): OtpRecord | null {
+  try {
+    const raw = sessionStorage.getItem(OTP_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+export function verifyOtpCode(code: string): { ok: boolean; error?: string } {
+  const record = getOtpRecord();
+  if (!record) return { ok: false, error: "No OTP found. Please request a new one." };
+  if (record.verified) return { ok: false, error: "OTP already used." };
+  if (Date.now() > record.expiresAt) {
+    clearOtp();
+    return { ok: false, error: "OTP has expired. Please request a new one." };
+  }
+  if (record.attempts >= MAX_ATTEMPTS) {
+    clearOtp();
+    return { ok: false, error: "Too many attempts. Please request a new OTP." };
+  }
+
+  record.attempts += 1;
+  sessionStorage.setItem(OTP_KEY, JSON.stringify(record));
+
+  if (code !== record.code) {
+    const remaining = MAX_ATTEMPTS - record.attempts;
+    return {
+      ok: false,
+      error: remaining > 0
+        ? `Incorrect code. ${remaining} attempt${remaining !== 1 ? "s" : ""} remaining.`
+        : "Too many attempts. Please request a new OTP.",
+    };
+  }
+
+  record.verified = true;
+  sessionStorage.setItem(OTP_KEY, JSON.stringify(record));
+  return { ok: true };
+}
+
+export function clearOtp(): void {
+  sessionStorage.removeItem(OTP_KEY);
+}
+
+export function getRemainingSeconds(record: OtpRecord): number {
+  return Math.max(0, Math.floor((record.expiresAt - Date.now()) / 1000));
+}
+
+/**
+ * Format OTP contact for display (mask middle digits)
+ */
+export function maskContact(contact: string, type: "email" | "phone"): string {
+  if (type === "email") {
+    const [user, domain] = contact.split("@");
+    if (!user || !domain) return contact;
+    const masked = user[0] + "*".repeat(Math.max(1, user.length - 2)) + user.slice(-1);
+    return `${masked}@${domain}`;
+  } else {
+    // Phone: show country code + last 4
+    const last4 = contact.slice(-4);
+    const prefix = contact.slice(0, contact.length - 7);
+    return `${prefix}***${last4}`;
+  }
 }
