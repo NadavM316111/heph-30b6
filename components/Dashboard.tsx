@@ -1,353 +1,570 @@
 "use client";
 
-import type { User } from "@/app/page";
-import { COUNTRIES } from "@/lib/countries";
+import { useState } from "react";
+import type { AppUser } from "@/app/page";
 
-interface Props {
-  user: User;
-  onEditProfile: () => void;
+type Props = {
+  user: AppUser;
   onLogout: () => void;
-}
+};
 
-export default function Dashboard({ user, onEditProfile, onLogout }: Props) {
-  const countryObj = COUNTRIES.find((c) => c.code === user.country);
+type Tab = "chats" | "profile";
+
+export default function Dashboard({ user, onLogout }: Props) {
+  const [tab, setTab] = useState<Tab>("chats");
 
   return (
     <div style={styles.container}>
-      {/* Sidebar */}
-      <div style={styles.sidebar}>
-        <div style={styles.sidebarHeader}>
-          <span style={styles.logoText}>🔐 Confi</span>
-        </div>
-
-        <div style={styles.userCard} onClick={onEditProfile}>
-          <div style={{ ...styles.avatar, background: user.avatarColor }}>
-            {user.avatarInitials}
+      <div style={styles.shell}>
+        {/* Header */}
+        <div style={styles.header}>
+          <div style={styles.headerLeft}>
+            <span style={styles.headerLogo}>🔐</span>
+            <span style={styles.headerTitle}>Confi</span>
           </div>
-          <div style={styles.userInfo}>
-            <div style={styles.userName}>{user.displayName}</div>
-            <div style={styles.userEmail}>{user.email}</div>
-          </div>
-          <span style={styles.editIcon}>✏️</span>
-        </div>
-
-        <div style={styles.idBadge}>
-          <div style={styles.idBadgeRow}>
-            <span style={styles.verifiedDot} />
-            <span style={styles.idBadgeText}>Identity Verified</span>
-          </div>
-          <div style={styles.idBadgeCountry}>
-            {countryObj?.flag} {countryObj?.name}
+          <div style={styles.headerRight}>
+            {user.isVerified && (
+              <div style={styles.verifiedPill}>✅ Verified</div>
+            )}
+            <button style={styles.logoutBtn} onClick={onLogout}>
+              Sign out
+            </button>
           </div>
         </div>
 
-        <nav style={styles.nav}>
-          <div style={{ ...styles.navItem, ...styles.navItemActive }}>
-            💬 Messages
-          </div>
-          <div style={styles.navItem}>🔐 Confidential</div>
-          <div style={styles.navItem}>📋 My NDAs</div>
-          <div style={styles.navItem}>🔒 Security</div>
-          <div style={styles.navItem}>⚙️ Settings</div>
-        </nav>
-
-        <button style={styles.logoutBtn} onClick={onLogout}>
-          Sign Out
-        </button>
-      </div>
-
-      {/* Main Content */}
-      <div style={styles.main}>
-        <div style={styles.welcomeCard}>
-          <div style={styles.welcomeIcon}>🎉</div>
-          <h1 style={styles.welcomeTitle}>
-            Welcome to Confi, {user.displayName}!
-          </h1>
-          <p style={styles.welcomeText}>
-            Your identity has been verified and encrypted. You are now ready to
-            use Confidential Mode — legally binding NDAs will protect your
-            sensitive conversations.
-          </p>
+        {/* Tab bar */}
+        <div style={styles.tabBar}>
+          <button
+            style={{ ...styles.tab, ...(tab === "chats" ? styles.tabActive : {}) }}
+            onClick={() => setTab("chats")}
+          >
+            💬 Chats
+          </button>
+          <button
+            style={{ ...styles.tab, ...(tab === "profile" ? styles.tabActive : {}) }}
+            onClick={() => setTab("profile")}
+          >
+            👤 Profile
+          </button>
         </div>
 
-        <div style={styles.grid}>
-          <div style={styles.gridCard}>
-            <div style={styles.gridCardIcon}>🛡️</div>
-            <div style={styles.gridCardTitle}>Legal Identity Active</div>
-            <div style={styles.gridCardText}>
-              Your full name <strong style={{ color: "#a78bfa" }}>{user.fullName}</strong> is
-              encrypted and registered as the legally binding party for all
-              Confidential Mode conversations.
-            </div>
-          </div>
-
-          <div style={styles.gridCard}>
-            <div style={styles.gridCardIcon}>⚖️</div>
-            <div style={styles.gridCardTitle}>Jurisdiction</div>
-            <div style={styles.gridCardText}>
-              {countryObj?.flag} {countryObj?.name}
-              <br />
-              <span style={{ fontSize: "12px", color: "rgba(255,255,255,0.35)" }}>
-                Governing law for your confidential agreements and NDA enforcement.
-              </span>
-            </div>
-          </div>
-
-          <div style={styles.gridCard}>
-            <div style={styles.gridCardIcon}>🔑</div>
-            <div style={styles.gridCardTitle}>Session Secured</div>
-            <div style={styles.gridCardText}>
-              Active JWT session token issued. All API requests are authenticated.
-              Token expires in 24 hours.
-            </div>
-          </div>
-
-          <div style={styles.gridCard}>
-            <div style={styles.gridCardIcon}>📨</div>
-            <div style={styles.gridCardTitle}>Confidential Mode Ready</div>
-            <div style={styles.gridCardText}>
-              Start a conversation and toggle Confidential Mode to activate an
-              international NDA. Both parties must be verified.
-            </div>
-          </div>
-        </div>
-
-        <div style={styles.infoPanel}>
-          <h2 style={styles.infoPanelTitle}>How Confidential Mode Works</h2>
-          <div style={styles.steps}>
-            {[
-              { icon: "1️⃣", text: "Both participants must have verified identities on Confi." },
-              { icon: "2️⃣", text: "Toggle Confidential Mode in any conversation to activate the NDA." },
-              { icon: "3️⃣", text: "An international NDA is generated, stamped with your legal identity, jurisdiction, and timestamp." },
-              { icon: "4️⃣", text: "All messages in the thread are legally covered under confidentiality obligations." },
-              { icon: "5️⃣", text: "You can download a signed PDF copy of the NDA for your records." },
-            ].map((s) => (
-              <div key={s.icon} style={styles.step}>
-                <span style={styles.stepIcon}>{s.icon}</span>
-                <span style={styles.stepText}>{s.text}</span>
-              </div>
-            ))}
-          </div>
+        {/* Content */}
+        <div style={styles.content}>
+          {tab === "chats" && <ChatsPanel user={user} />}
+          {tab === "profile" && <ProfilePanel user={user} />}
         </div>
       </div>
     </div>
   );
 }
 
-const styles: Record<string, React.CSSProperties> = {
+function ChatsPanel({ user }: { user: AppUser }) {
+  return (
+    <div style={panelStyles.container}>
+      <div style={panelStyles.welcomeCard}>
+        {user.avatarUrl ? (
+          <img src={user.avatarUrl} alt="avatar" style={panelStyles.avatarImg} />
+        ) : (
+          <div style={panelStyles.avatarFallback}>
+            {user.displayName?.charAt(0).toUpperCase() || "U"}
+          </div>
+        )}
+        <div>
+          <div style={panelStyles.welcomeText}>Welcome back,</div>
+          <div style={panelStyles.displayName}>{user.displayName || "User"}</div>
+        </div>
+      </div>
+
+      {!user.isVerified && (
+        <div style={panelStyles.verifyBanner}>
+          <span>🔏</span>
+          <div>
+            <div style={panelStyles.verifyBannerTitle}>Complete Identity Verification</div>
+            <div style={panelStyles.verifyBannerDesc}>
+              Required to activate Confidential / NDA mode in conversations
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div style={panelStyles.featureList}>
+        {[
+          {
+            icon: "💬",
+            title: "Encrypted Messaging",
+            desc: "End-to-end encrypted by default",
+            available: true,
+          },
+          {
+            icon: "🔏",
+            title: "Confidential / NDA Mode",
+            desc: "Legally protected conversations under international NDA",
+            available: user.isVerified,
+          },
+          {
+            icon: "📎",
+            title: "Secure File Sharing",
+            desc: "Share documents with full audit trail",
+            available: user.isVerified,
+          },
+          {
+            icon: "⚖️",
+            title: "Legal Audit Log",
+            desc: "Tamper-evident conversation records",
+            available: user.isVerified,
+          },
+        ].map((f) => (
+          <div
+            key={f.title}
+            style={{ ...panelStyles.featureItem, ...(f.available ? {} : panelStyles.featureItemLocked) }}
+          >
+            <span style={panelStyles.featureIcon}>{f.icon}</span>
+            <div style={panelStyles.featureInfo}>
+              <div style={panelStyles.featureTitle}>{f.title}</div>
+              <div style={panelStyles.featureDesc}>{f.desc}</div>
+            </div>
+            {f.available ? (
+              <span style={panelStyles.featureReady}>Ready</span>
+            ) : (
+              <span style={panelStyles.featureLock}>🔒</span>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <div style={panelStyles.comingSoon}>
+        <span style={panelStyles.comingSoonBadge}>Coming Next</span>
+        <p style={panelStyles.comingSoonText}>
+          Real-time messaging, group chats, and NDA-mode conversations are being built next.
+          Your verified identity is ready to back any confidential conversation.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function ProfilePanel({ user }: { user: AppUser }) {
+  const verificationRecord = (() => {
+    try {
+      const v = localStorage.getItem("confi_verification");
+      return v ? JSON.parse(v) : null;
+    } catch {
+      return null;
+    }
+  })();
+
+  return (
+    <div style={panelStyles.container}>
+      <div style={panelStyles.profileCard}>
+        {user.avatarUrl ? (
+          <img src={user.avatarUrl} alt="avatar" style={panelStyles.profileAvatar} />
+        ) : (
+          <div style={panelStyles.profileAvatarFallback}>
+            {user.displayName?.charAt(0).toUpperCase() || "U"}
+          </div>
+        )}
+        <div style={panelStyles.profileName}>{user.displayName || "No name set"}</div>
+        <div style={panelStyles.profileEmail}>{user.email}</div>
+        {user.phone && <div style={panelStyles.profilePhone}>📱 {user.phone}</div>}
+        {user.isVerified ? (
+          <div style={panelStyles.profileVerifiedBadge}>✅ Identity Verified</div>
+        ) : (
+          <div style={panelStyles.profileUnverifiedBadge}>⚠️ Not Verified</div>
+        )}
+      </div>
+
+      {verificationRecord && (
+        <div style={panelStyles.auditCard}>
+          <div style={panelStyles.auditTitle}>🔏 Verification Record</div>
+          <div style={panelStyles.auditGrid}>
+            <AuditRow label="Verification ID" value={verificationRecord.verificationId} mono />
+            <AuditRow label="Verified At" value={new Date(verificationRecord.verifiedAt).toLocaleString()} />
+            <AuditRow
+              label="Document Type"
+              value={verificationRecord.docType?.replace("_", " ").toUpperCase()}
+            />
+            <AuditRow
+              label="Liveness Checks"
+              value={`${verificationRecord.livenessChecks?.length || 0}/5 passed`}
+            />
+            <AuditRow label="Audit Hash" value={verificationRecord.auditHash} mono />
+          </div>
+          <div style={panelStyles.auditNote}>
+            This record is stored for NDA legal proceedings. Your verified identity backs any
+            confidential conversation you participate in.
+          </div>
+        </div>
+      )}
+
+      <div style={panelStyles.sessionCard}>
+        <div style={panelStyles.sessionTitle}>Session Info</div>
+        <AuditRow label="Session Token" value={`${user.sessionToken?.slice(0, 16)}…`} mono />
+        <AuditRow label="Account Email" value={user.email} />
+      </div>
+    </div>
+  );
+}
+
+function AuditRow({ label, value, mono }: { label: string; value?: string; mono?: boolean }) {
+  return (
+    <div style={auditRowStyles.row}>
+      <span style={auditRowStyles.label}>{label}</span>
+      <span style={{ ...auditRowStyles.value, ...(mono ? auditRowStyles.mono : {}) }}>
+        {value || "—"}
+      </span>
+    </div>
+  );
+}
+
+const auditRowStyles: Record<string, React.CSSProperties> = {
+  row: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    padding: "6px 0",
+    borderBottom: "1px solid rgba(255,255,255,0.04)",
+    gap: "12px",
+  },
+  label: {
+    color: "#64748b",
+    fontSize: "12px",
+    flexShrink: 0,
+  },
+  value: {
+    color: "#94a3b8",
+    fontSize: "12px",
+    textAlign: "right",
+    wordBreak: "break-all",
+  },
+  mono: {
+    fontFamily: "monospace",
+    fontSize: "11px",
+  },
+};
+
+const panelStyles: Record<string, React.CSSProperties> = {
   container: {
     display: "flex",
-    width: "100%",
-    maxWidth: "1100px",
-    margin: "20px",
-    height: "calc(100vh - 40px)",
-    maxHeight: "800px",
-    background: "rgba(255,255,255,0.03)",
-    backdropFilter: "blur(20px)",
-    border: "1px solid rgba(255,255,255,0.08)",
-    borderRadius: "24px",
-    overflow: "hidden",
-    boxShadow: "0 25px 60px rgba(0,0,0,0.6)",
-    animation: "fadeIn 0.4s ease-out",
-  },
-  sidebar: {
-    width: "260px",
-    flexShrink: 0,
-    background: "rgba(0,0,0,0.25)",
-    borderRight: "1px solid rgba(255,255,255,0.06)",
-    display: "flex",
     flexDirection: "column",
-    padding: "20px 16px",
+    gap: "16px",
   },
-  sidebarHeader: {
-    marginBottom: "20px",
-    paddingBottom: "16px",
-    borderBottom: "1px solid rgba(255,255,255,0.06)",
-  },
-  logoText: {
-    fontSize: "18px",
-    fontWeight: "800",
-    background: "linear-gradient(135deg, #a78bfa, #60a5fa)",
-    WebkitBackgroundClip: "text",
-    WebkitTextFillColor: "transparent",
-    backgroundClip: "text",
-  },
-  userCard: {
+  welcomeCard: {
     display: "flex",
     alignItems: "center",
-    gap: "10px",
-    padding: "12px",
+    gap: "14px",
+    padding: "16px",
+    background: "rgba(99,102,241,0.1)",
+    border: "1px solid rgba(99,102,241,0.2)",
     borderRadius: "12px",
-    cursor: "pointer",
-    marginBottom: "12px",
-    transition: "background 0.2s",
-    background: "rgba(255,255,255,0.04)",
   },
-  avatar: {
-    width: "40px",
-    height: "40px",
+  avatarImg: {
+    width: "48px",
+    height: "48px",
     borderRadius: "50%",
+    objectFit: "cover",
+    border: "2px solid rgba(99,102,241,0.5)",
+  },
+  avatarFallback: {
+    width: "48px",
+    height: "48px",
+    borderRadius: "50%",
+    background: "linear-gradient(135deg, #6366f1, #8b5cf6)",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    fontSize: "16px",
-    fontWeight: "700",
-    color: "white",
+    color: "#fff",
+    fontWeight: 700,
+    fontSize: "20px",
     flexShrink: 0,
   },
-  userInfo: { flex: 1, minWidth: 0 },
-  userName: {
-    fontSize: "14px",
-    fontWeight: "600",
-    color: "#ffffff",
-    overflow: "hidden",
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap",
-  },
-  userEmail: {
-    fontSize: "11px",
-    color: "rgba(255,255,255,0.35)",
-    overflow: "hidden",
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap",
-  },
-  editIcon: { fontSize: "12px" },
-  idBadge: {
-    padding: "10px 12px",
-    background: "rgba(16,185,129,0.08)",
-    border: "1px solid rgba(16,185,129,0.2)",
-    borderRadius: "10px",
-    marginBottom: "20px",
-  },
-  idBadgeRow: {
-    display: "flex",
-    alignItems: "center",
-    gap: "6px",
-    marginBottom: "4px",
-  },
-  verifiedDot: {
-    width: "7px",
-    height: "7px",
-    borderRadius: "50%",
-    background: "#10b981",
-    boxShadow: "0 0 6px #10b981",
-  },
-  idBadgeText: {
-    fontSize: "12px",
-    fontWeight: "600",
-    color: "#10b981",
-  },
-  idBadgeCountry: {
-    fontSize: "12px",
-    color: "rgba(255,255,255,0.45)",
-  },
-  nav: {
-    flex: 1,
-    display: "flex",
-    flexDirection: "column",
-    gap: "4px",
-  },
-  navItem: {
-    padding: "10px 14px",
-    borderRadius: "10px",
-    fontSize: "14px",
-    color: "rgba(255,255,255,0.5)",
-    cursor: "pointer",
-    transition: "all 0.15s",
-  },
-  navItemActive: {
-    background: "rgba(124,58,237,0.2)",
-    color: "#a78bfa",
-    fontWeight: "600",
-  },
-  logoutBtn: {
-    marginTop: "12px",
-    padding: "10px",
-    background: "rgba(255,255,255,0.05)",
-    border: "1px solid rgba(255,255,255,0.08)",
-    borderRadius: "10px",
-    color: "rgba(255,255,255,0.4)",
-    fontSize: "14px",
-    cursor: "pointer",
-  },
-  main: {
-    flex: 1,
-    overflowY: "auto",
-    padding: "28px",
-  },
-  welcomeCard: {
-    background: "linear-gradient(135deg, rgba(124,58,237,0.15), rgba(79,70,229,0.1))",
-    border: "1px solid rgba(124,58,237,0.2)",
-    borderRadius: "18px",
-    padding: "28px",
-    marginBottom: "24px",
-    display: "flex",
-    flexDirection: "column",
-    gap: "10px",
-  },
-  welcomeIcon: { fontSize: "32px" },
-  welcomeTitle: {
-    fontSize: "22px",
-    fontWeight: "700",
-    color: "#ffffff",
-  },
   welcomeText: {
-    fontSize: "14px",
-    color: "rgba(255,255,255,0.55)",
-    lineHeight: 1.7,
+    color: "#94a3b8",
+    fontSize: "12px",
   },
-  grid: {
-    display: "grid",
-    gridTemplateColumns: "1fr 1fr",
-    gap: "14px",
-    marginBottom: "24px",
+  displayName: {
+    color: "#fff",
+    fontSize: "18px",
+    fontWeight: 700,
   },
-  gridCard: {
-    background: "rgba(255,255,255,0.04)",
-    border: "1px solid rgba(255,255,255,0.07)",
-    borderRadius: "16px",
-    padding: "20px",
+  verifyBanner: {
+    display: "flex",
+    gap: "12px",
+    padding: "14px",
+    background: "rgba(251,191,36,0.08)",
+    border: "1px solid rgba(251,191,36,0.25)",
+    borderRadius: "10px",
+    alignItems: "flex-start",
+    fontSize: "20px",
+  },
+  verifyBannerTitle: {
+    color: "#fde68a",
+    fontWeight: 600,
+    fontSize: "13px",
+    marginBottom: "3px",
+  },
+  verifyBannerDesc: {
+    color: "#94a3b8",
+    fontSize: "12px",
+  },
+  featureList: {
     display: "flex",
     flexDirection: "column",
     gap: "8px",
   },
-  gridCardIcon: { fontSize: "24px" },
-  gridCardTitle: {
-    fontSize: "14px",
-    fontWeight: "700",
-    color: "rgba(255,255,255,0.85)",
-  },
-  gridCardText: {
-    fontSize: "13px",
-    color: "rgba(255,255,255,0.45)",
-    lineHeight: 1.6,
-  },
-  infoPanel: {
-    background: "rgba(255,255,255,0.03)",
+  featureItem: {
+    display: "flex",
+    alignItems: "center",
+    gap: "12px",
+    padding: "12px",
+    background: "rgba(255,255,255,0.04)",
     border: "1px solid rgba(255,255,255,0.07)",
-    borderRadius: "18px",
+    borderRadius: "10px",
+  },
+  featureItemLocked: {
+    opacity: 0.55,
+  },
+  featureIcon: {
+    fontSize: "22px",
+    flexShrink: 0,
+  },
+  featureInfo: {
+    flex: 1,
+  },
+  featureTitle: {
+    color: "#e2e8f0",
+    fontSize: "13px",
+    fontWeight: 600,
+  },
+  featureDesc: {
+    color: "#64748b",
+    fontSize: "12px",
+    marginTop: "2px",
+  },
+  featureReady: {
+    color: "#22c55e",
+    fontSize: "11px",
+    fontWeight: 600,
+    background: "rgba(34,197,94,0.1)",
+    padding: "2px 8px",
+    borderRadius: "10px",
+    border: "1px solid rgba(34,197,94,0.3)",
+  },
+  featureLock: {
+    fontSize: "16px",
+  },
+  comingSoon: {
+    border: "1px dashed rgba(99,102,241,0.3)",
+    borderRadius: "10px",
+    padding: "14px",
+    textAlign: "center",
+  },
+  comingSoonBadge: {
+    display: "inline-block",
+    background: "rgba(99,102,241,0.15)",
+    color: "#a5b4fc",
+    fontSize: "11px",
+    fontWeight: 700,
+    padding: "2px 10px",
+    borderRadius: "10px",
+    marginBottom: "8px",
+    letterSpacing: "0.5px",
+  },
+  comingSoonText: {
+    color: "#64748b",
+    fontSize: "12px",
+    lineHeight: 1.6,
+    margin: 0,
+  },
+  profileCard: {
+    textAlign: "center",
     padding: "24px",
+    background: "rgba(255,255,255,0.04)",
+    border: "1px solid rgba(255,255,255,0.08)",
+    borderRadius: "16px",
   },
-  infoPanelTitle: {
-    fontSize: "17px",
-    fontWeight: "700",
-    color: "rgba(255,255,255,0.85)",
-    marginBottom: "16px",
+  profileAvatar: {
+    width: "80px",
+    height: "80px",
+    borderRadius: "50%",
+    objectFit: "cover",
+    border: "3px solid rgba(99,102,241,0.5)",
+    margin: "0 auto 12px",
+    display: "block",
   },
-  steps: {
+  profileAvatarFallback: {
+    width: "80px",
+    height: "80px",
+    borderRadius: "50%",
+    background: "linear-gradient(135deg, #6366f1, #8b5cf6)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    color: "#fff",
+    fontWeight: 700,
+    fontSize: "32px",
+    margin: "0 auto 12px",
+  },
+  profileName: {
+    color: "#fff",
+    fontSize: "20px",
+    fontWeight: 700,
+    marginBottom: "4px",
+  },
+  profileEmail: {
+    color: "#94a3b8",
+    fontSize: "13px",
+    marginBottom: "4px",
+  },
+  profilePhone: {
+    color: "#64748b",
+    fontSize: "12px",
+    marginBottom: "12px",
+  },
+  profileVerifiedBadge: {
+    display: "inline-block",
+    background: "rgba(34,197,94,0.1)",
+    border: "1px solid rgba(34,197,94,0.4)",
+    borderRadius: "20px",
+    color: "#86efac",
+    fontSize: "13px",
+    fontWeight: 600,
+    padding: "4px 16px",
+  },
+  profileUnverifiedBadge: {
+    display: "inline-block",
+    background: "rgba(251,191,36,0.1)",
+    border: "1px solid rgba(251,191,36,0.3)",
+    borderRadius: "20px",
+    color: "#fde68a",
+    fontSize: "13px",
+    fontWeight: 600,
+    padding: "4px 16px",
+  },
+  auditCard: {
+    padding: "16px",
+    background: "rgba(99,102,241,0.05)",
+    border: "1px solid rgba(99,102,241,0.2)",
+    borderRadius: "12px",
+  },
+  auditTitle: {
+    color: "#c7d2fe",
+    fontSize: "14px",
+    fontWeight: 600,
+    marginBottom: "12px",
+  },
+  auditGrid: {
     display: "flex",
     flexDirection: "column",
-    gap: "12px",
   },
-  step: {
+  auditNote: {
+    color: "#475569",
+    fontSize: "11px",
+    marginTop: "10px",
+    lineHeight: 1.5,
+  },
+  sessionCard: {
+    padding: "14px",
+    background: "rgba(255,255,255,0.03)",
+    border: "1px solid rgba(255,255,255,0.06)",
+    borderRadius: "12px",
+  },
+  sessionTitle: {
+    color: "#64748b",
+    fontSize: "12px",
+    fontWeight: 600,
+    marginBottom: "8px",
+    textTransform: "uppercase",
+    letterSpacing: "0.5px",
+  },
+};
+
+const styles: Record<string, React.CSSProperties> = {
+  container: {
+    width: "100%",
+    maxWidth: "480px",
+    padding: "16px",
+    maxHeight: "95vh",
+  },
+  shell: {
+    background: "rgba(255,255,255,0.04)",
+    backdropFilter: "blur(20px)",
+    border: "1px solid rgba(255,255,255,0.08)",
+    borderRadius: "24px",
+    overflow: "hidden",
+    boxShadow: "0 25px 50px rgba(0,0,0,0.5)",
+    maxHeight: "90vh",
     display: "flex",
-    gap: "12px",
-    alignItems: "flex-start",
+    flexDirection: "column",
   },
-  stepIcon: { fontSize: "16px", flexShrink: 0 },
-  stepText: {
-    fontSize: "13px",
-    color: "rgba(255,255,255,0.5)",
-    lineHeight: 1.6,
+  header: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: "16px 20px",
+    borderBottom: "1px solid rgba(255,255,255,0.06)",
+    background: "rgba(0,0,0,0.2)",
+  },
+  headerLeft: {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+  },
+  headerLogo: {
+    fontSize: "22px",
+  },
+  headerTitle: {
+    color: "#fff",
+    fontSize: "18px",
+    fontWeight: 700,
+  },
+  headerRight: {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+  },
+  verifiedPill: {
+    background: "rgba(34,197,94,0.1)",
+    border: "1px solid rgba(34,197,94,0.3)",
+    borderRadius: "20px",
+    color: "#86efac",
+    fontSize: "11px",
+    fontWeight: 600,
+    padding: "3px 10px",
+  },
+  logoutBtn: {
+    background: "rgba(239,68,68,0.1)",
+    border: "1px solid rgba(239,68,68,0.25)",
+    borderRadius: "8px",
+    color: "#fca5a5",
+    fontSize: "12px",
+    padding: "5px 12px",
+    cursor: "pointer",
+  },
+  tabBar: {
+    display: "flex",
+    borderBottom: "1px solid rgba(255,255,255,0.06)",
+    background: "rgba(0,0,0,0.1)",
+  },
+  tab: {
+    flex: 1,
+    padding: "13px",
+    border: "none",
+    background: "transparent",
+    color: "#64748b",
+    fontSize: "14px",
+    fontWeight: 500,
+    cursor: "pointer",
+    borderBottom: "2px solid transparent",
+    transition: "all 0.2s",
+  },
+  tabActive: {
+    color: "#a5b4fc",
+    borderBottomColor: "#6366f1",
+    background: "rgba(99,102,241,0.06)",
+  },
+  content: {
+    padding: "20px",
+    overflowY: "auto",
+    flex: 1,
   },
 };
