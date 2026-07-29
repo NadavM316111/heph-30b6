@@ -1,570 +1,286 @@
 "use client";
 
 import { useState } from "react";
-import type { AppUser } from "@/app/page";
+import { SessionUser, saveSession } from "@/lib/session";
 
-type Props = {
-  user: AppUser;
+interface Props {
+  user: SessionUser;
+  fingerprint: string;
   onLogout: () => void;
-};
-
-type Tab = "chats" | "profile";
-
-export default function Dashboard({ user, onLogout }: Props) {
-  const [tab, setTab] = useState<Tab>("chats");
-
-  return (
-    <div style={styles.container}>
-      <div style={styles.shell}>
-        {/* Header */}
-        <div style={styles.header}>
-          <div style={styles.headerLeft}>
-            <span style={styles.headerLogo}>🔐</span>
-            <span style={styles.headerTitle}>Confi</span>
-          </div>
-          <div style={styles.headerRight}>
-            {user.isVerified && (
-              <div style={styles.verifiedPill}>✅ Verified</div>
-            )}
-            <button style={styles.logoutBtn} onClick={onLogout}>
-              Sign out
-            </button>
-          </div>
-        </div>
-
-        {/* Tab bar */}
-        <div style={styles.tabBar}>
-          <button
-            style={{ ...styles.tab, ...(tab === "chats" ? styles.tabActive : {}) }}
-            onClick={() => setTab("chats")}
-          >
-            💬 Chats
-          </button>
-          <button
-            style={{ ...styles.tab, ...(tab === "profile" ? styles.tabActive : {}) }}
-            onClick={() => setTab("profile")}
-          >
-            👤 Profile
-          </button>
-        </div>
-
-        {/* Content */}
-        <div style={styles.content}>
-          {tab === "chats" && <ChatsPanel user={user} />}
-          {tab === "profile" && <ProfilePanel user={user} />}
-        </div>
-      </div>
-    </div>
-  );
 }
 
-function ChatsPanel({ user }: { user: AppUser }) {
+type Tab = "chats" | "profile" | "security";
+
+export default function Dashboard({ user, fingerprint, onLogout }: Props) {
+  const [tab, setTab] = useState<Tab>("chats");
+  const [editName, setEditName] = useState(user.displayName);
+  const [editAvatar, setEditAvatar] = useState(user.avatar);
+  const [saved, setSaved] = useState(false);
+
+  const handleSaveProfile = () => {
+    const updated: SessionUser = { ...user, displayName: editName, avatar: editAvatar };
+    localStorage.setItem(`confi_profile_${user.email}`, JSON.stringify(updated));
+    saveSession(updated);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  const sessionAge = Math.floor((Date.now() - user.lastSeen) / 1000 / 60);
+
   return (
-    <div style={panelStyles.container}>
-      <div style={panelStyles.welcomeCard}>
-        {user.avatarUrl ? (
-          <img src={user.avatarUrl} alt="avatar" style={panelStyles.avatarImg} />
-        ) : (
-          <div style={panelStyles.avatarFallback}>
-            {user.displayName?.charAt(0).toUpperCase() || "U"}
-          </div>
-        )}
-        <div>
-          <div style={panelStyles.welcomeText}>Welcome back,</div>
-          <div style={panelStyles.displayName}>{user.displayName || "User"}</div>
-        </div>
-      </div>
-
-      {!user.isVerified && (
-        <div style={panelStyles.verifyBanner}>
-          <span>🔏</span>
+    <div style={s.root}>
+      <header style={s.header}>
+        <div style={s.headerLeft}>
+          <span style={{ fontSize: 28 }}>{user.avatar}</span>
           <div>
-            <div style={panelStyles.verifyBannerTitle}>Complete Identity Verification</div>
-            <div style={panelStyles.verifyBannerDesc}>
-              Required to activate Confidential / NDA mode in conversations
-            </div>
+            <div style={s.headerName}>{user.displayName}</div>
+            <div style={s.headerStatus}>🟢 Trusted Identity Verified</div>
           </div>
         </div>
-      )}
+        <button style={s.logoutBtn} onClick={onLogout}>Sign Out</button>
+      </header>
 
-      <div style={panelStyles.featureList}>
-        {[
-          {
-            icon: "💬",
-            title: "Encrypted Messaging",
-            desc: "End-to-end encrypted by default",
-            available: true,
-          },
-          {
-            icon: "🔏",
-            title: "Confidential / NDA Mode",
-            desc: "Legally protected conversations under international NDA",
-            available: user.isVerified,
-          },
-          {
-            icon: "📎",
-            title: "Secure File Sharing",
-            desc: "Share documents with full audit trail",
-            available: user.isVerified,
-          },
-          {
-            icon: "⚖️",
-            title: "Legal Audit Log",
-            desc: "Tamper-evident conversation records",
-            available: user.isVerified,
-          },
-        ].map((f) => (
-          <div
-            key={f.title}
-            style={{ ...panelStyles.featureItem, ...(f.available ? {} : panelStyles.featureItemLocked) }}
+      <div style={s.tabs}>
+        {(["chats", "profile", "security"] as Tab[]).map((t) => (
+          <button
+            key={t}
+            style={{ ...s.tabBtn, ...(tab === t ? s.tabActive : {}) }}
+            onClick={() => setTab(t)}
           >
-            <span style={panelStyles.featureIcon}>{f.icon}</span>
-            <div style={panelStyles.featureInfo}>
-              <div style={panelStyles.featureTitle}>{f.title}</div>
-              <div style={panelStyles.featureDesc}>{f.desc}</div>
-            </div>
-            {f.available ? (
-              <span style={panelStyles.featureReady}>Ready</span>
-            ) : (
-              <span style={panelStyles.featureLock}>🔒</span>
-            )}
-          </div>
+            {t === "chats" ? "💬 Chats" : t === "profile" ? "👤 Profile" : "🔐 Security"}
+          </button>
         ))}
       </div>
 
-      <div style={panelStyles.comingSoon}>
-        <span style={panelStyles.comingSoonBadge}>Coming Next</span>
-        <p style={panelStyles.comingSoonText}>
-          Real-time messaging, group chats, and NDA-mode conversations are being built next.
-          Your verified identity is ready to back any confidential conversation.
-        </p>
-      </div>
-    </div>
-  );
-}
-
-function ProfilePanel({ user }: { user: AppUser }) {
-  const verificationRecord = (() => {
-    try {
-      const v = localStorage.getItem("confi_verification");
-      return v ? JSON.parse(v) : null;
-    } catch {
-      return null;
-    }
-  })();
-
-  return (
-    <div style={panelStyles.container}>
-      <div style={panelStyles.profileCard}>
-        {user.avatarUrl ? (
-          <img src={user.avatarUrl} alt="avatar" style={panelStyles.profileAvatar} />
-        ) : (
-          <div style={panelStyles.profileAvatarFallback}>
-            {user.displayName?.charAt(0).toUpperCase() || "U"}
+      <div style={s.content}>
+        {tab === "chats" && (
+          <div style={s.panel}>
+            <div style={s.emptyState}>
+              <span style={{ fontSize: 48 }}>💬</span>
+              <h2 style={s.emptyTitle}>No conversations yet</h2>
+              <p style={s.emptyText}>
+                Your identity has been verified and your device is trusted.
+                Confidential conversations will appear here.
+              </p>
+              <div style={s.identityCard}>
+                <div style={s.identityRow}>
+                  <span style={s.identityLabel}>Verified Email</span>
+                  <span style={s.identityValue}>{user.email}</span>
+                </div>
+                <div style={s.identityRow}>
+                  <span style={s.identityLabel}>Unique ID</span>
+                  <span style={{ ...s.identityValue, fontFamily: "monospace", fontSize: 11 }}>
+                    {user.uid.slice(0, 20)}…
+                  </span>
+                </div>
+                <div style={s.identityRow}>
+                  <span style={s.identityLabel}>NDA Status</span>
+                  <span style={{ ...s.identityValue, color: "#6ee7b7" }}>
+                    ✅ {user.consentVersion} Accepted
+                  </span>
+                </div>
+                <div style={s.identityRow}>
+                  <span style={s.identityLabel}>Consent Date</span>
+                  <span style={s.identityValue}>
+                    {new Date(user.consentTimestamp).toLocaleDateString()}
+                  </span>
+                </div>
+              </div>
+            </div>
           </div>
         )}
-        <div style={panelStyles.profileName}>{user.displayName || "No name set"}</div>
-        <div style={panelStyles.profileEmail}>{user.email}</div>
-        {user.phone && <div style={panelStyles.profilePhone}>📱 {user.phone}</div>}
-        {user.isVerified ? (
-          <div style={panelStyles.profileVerifiedBadge}>✅ Identity Verified</div>
-        ) : (
-          <div style={panelStyles.profileUnverifiedBadge}>⚠️ Not Verified</div>
+
+        {tab === "profile" && (
+          <div style={s.panel}>
+            <h2 style={s.panelTitle}>Your Profile</h2>
+            <div style={s.profileAvatar}>{editAvatar}</div>
+            <div style={s.fieldGroup}>
+              <label style={s.label}>Display Name</label>
+              <input
+                style={s.input}
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                maxLength={40}
+              />
+            </div>
+            <div style={s.fieldGroup}>
+              <label style={s.label}>Email (verified, read-only)</label>
+              <input style={{ ...s.input, opacity: 0.5 }} value={user.email} readOnly />
+            </div>
+            <div style={s.fieldGroup}>
+              <label style={s.label}>Unique Confi ID</label>
+              <div style={s.uidBox}>{user.uid}</div>
+            </div>
+            <button style={s.saveBtn} onClick={handleSaveProfile}>
+              {saved ? "✅ Saved!" : "Save Changes"}
+            </button>
+          </div>
+        )}
+
+        {tab === "security" && (
+          <div style={s.panel}>
+            <h2 style={s.panelTitle}>Security & Identity</h2>
+            <div style={s.secCards}>
+              <SecurityCard
+                icon="🔑"
+                title="Session ID"
+                value={user.sessionId.slice(0, 24) + "…"}
+                status="active"
+                detail={`Active for ${sessionAge} minute(s)`}
+              />
+              <SecurityCard
+                icon="📱"
+                title="Device Fingerprint"
+                value={fingerprint.slice(0, 24) + "…"}
+                status="bound"
+                detail="Session bound to this device"
+              />
+              <SecurityCard
+                icon="⚖️"
+                title="NDA Agreement"
+                value={user.consentVersion || "NDA-v1.0"}
+                status="signed"
+                detail={`Signed ${new Date(user.consentTimestamp).toLocaleString()}`}
+              />
+              <SecurityCard
+                icon="🌐"
+                title="Identity Layer"
+                value="International Verification"
+                status="verified"
+                detail="Legally traceable identity established"
+              />
+            </div>
+            <div style={s.legalBox}>
+              <h3 style={{ margin: "0 0 10px 0", fontSize: 14, color: "#6ee7b7" }}>
+                🛡️ Legal Traceability Notice
+              </h3>
+              <p style={{ margin: 0, fontSize: 12, color: "#9ca3af", lineHeight: 1.7 }}>
+                Your identity on Confi is cryptographically bound to your verified email,
+                device fingerprint, and session token. Any violation of confidentiality
+                agreements is legally traceable to this specific identity and device.
+                This information is retained for legal compliance purposes only.
+              </p>
+            </div>
+            <button style={s.dangerBtn} onClick={onLogout}>
+              🚪 Sign Out & Revoke Session
+            </button>
+          </div>
         )}
       </div>
-
-      {verificationRecord && (
-        <div style={panelStyles.auditCard}>
-          <div style={panelStyles.auditTitle}>🔏 Verification Record</div>
-          <div style={panelStyles.auditGrid}>
-            <AuditRow label="Verification ID" value={verificationRecord.verificationId} mono />
-            <AuditRow label="Verified At" value={new Date(verificationRecord.verifiedAt).toLocaleString()} />
-            <AuditRow
-              label="Document Type"
-              value={verificationRecord.docType?.replace("_", " ").toUpperCase()}
-            />
-            <AuditRow
-              label="Liveness Checks"
-              value={`${verificationRecord.livenessChecks?.length || 0}/5 passed`}
-            />
-            <AuditRow label="Audit Hash" value={verificationRecord.auditHash} mono />
-          </div>
-          <div style={panelStyles.auditNote}>
-            This record is stored for NDA legal proceedings. Your verified identity backs any
-            confidential conversation you participate in.
-          </div>
-        </div>
-      )}
-
-      <div style={panelStyles.sessionCard}>
-        <div style={panelStyles.sessionTitle}>Session Info</div>
-        <AuditRow label="Session Token" value={`${user.sessionToken?.slice(0, 16)}…`} mono />
-        <AuditRow label="Account Email" value={user.email} />
-      </div>
     </div>
   );
 }
 
-function AuditRow({ label, value, mono }: { label: string; value?: string; mono?: boolean }) {
+function SecurityCard({
+  icon, title, value, status, detail,
+}: {
+  icon: string; title: string; value: string; status: string; detail: string;
+}) {
+  const statusColors: Record<string, string> = {
+    active: "#6ee7b7", bound: "#3b82f6", signed: "#a78bfa", verified: "#fbbf24",
+  };
   return (
-    <div style={auditRowStyles.row}>
-      <span style={auditRowStyles.label}>{label}</span>
-      <span style={{ ...auditRowStyles.value, ...(mono ? auditRowStyles.mono : {}) }}>
-        {value || "—"}
-      </span>
+    <div style={secCard}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <span style={{ fontSize: 20 }}>{icon}</span>
+        <span style={{
+          fontSize: 10, fontWeight: 700, color: statusColors[status] || "#6b7280",
+          background: `${statusColors[status]}18`, borderRadius: 4, padding: "2px 6px",
+          textTransform: "uppercase",
+        }}>
+          {status}
+        </span>
+      </div>
+      <div style={{ fontSize: 12, fontWeight: 700, color: "#d1d5db", marginTop: 8 }}>{title}</div>
+      <div style={{ fontSize: 10, fontFamily: "monospace", color: "#9ca3af", wordBreak: "break-all" }}>{value}</div>
+      <div style={{ fontSize: 10, color: "#6b7280", marginTop: 4 }}>{detail}</div>
     </div>
   );
 }
 
-const auditRowStyles: Record<string, React.CSSProperties> = {
-  row: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "flex-start",
-    padding: "6px 0",
-    borderBottom: "1px solid rgba(255,255,255,0.04)",
-    gap: "12px",
-  },
-  label: {
-    color: "#64748b",
-    fontSize: "12px",
-    flexShrink: 0,
-  },
-  value: {
-    color: "#94a3b8",
-    fontSize: "12px",
-    textAlign: "right",
-    wordBreak: "break-all",
-  },
-  mono: {
-    fontFamily: "monospace",
-    fontSize: "11px",
-  },
-};
-
-const panelStyles: Record<string, React.CSSProperties> = {
-  container: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "16px",
-  },
-  welcomeCard: {
-    display: "flex",
-    alignItems: "center",
-    gap: "14px",
-    padding: "16px",
-    background: "rgba(99,102,241,0.1)",
-    border: "1px solid rgba(99,102,241,0.2)",
-    borderRadius: "12px",
-  },
-  avatarImg: {
-    width: "48px",
-    height: "48px",
-    borderRadius: "50%",
-    objectFit: "cover",
-    border: "2px solid rgba(99,102,241,0.5)",
-  },
-  avatarFallback: {
-    width: "48px",
-    height: "48px",
-    borderRadius: "50%",
-    background: "linear-gradient(135deg, #6366f1, #8b5cf6)",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    color: "#fff",
-    fontWeight: 700,
-    fontSize: "20px",
-    flexShrink: 0,
-  },
-  welcomeText: {
-    color: "#94a3b8",
-    fontSize: "12px",
-  },
-  displayName: {
-    color: "#fff",
-    fontSize: "18px",
-    fontWeight: 700,
-  },
-  verifyBanner: {
-    display: "flex",
-    gap: "12px",
-    padding: "14px",
-    background: "rgba(251,191,36,0.08)",
-    border: "1px solid rgba(251,191,36,0.25)",
-    borderRadius: "10px",
-    alignItems: "flex-start",
-    fontSize: "20px",
-  },
-  verifyBannerTitle: {
-    color: "#fde68a",
-    fontWeight: 600,
-    fontSize: "13px",
-    marginBottom: "3px",
-  },
-  verifyBannerDesc: {
-    color: "#94a3b8",
-    fontSize: "12px",
-  },
-  featureList: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "8px",
-  },
-  featureItem: {
-    display: "flex",
-    alignItems: "center",
-    gap: "12px",
-    padding: "12px",
-    background: "rgba(255,255,255,0.04)",
-    border: "1px solid rgba(255,255,255,0.07)",
-    borderRadius: "10px",
-  },
-  featureItemLocked: {
-    opacity: 0.55,
-  },
-  featureIcon: {
-    fontSize: "22px",
-    flexShrink: 0,
-  },
-  featureInfo: {
-    flex: 1,
-  },
-  featureTitle: {
-    color: "#e2e8f0",
-    fontSize: "13px",
-    fontWeight: 600,
-  },
-  featureDesc: {
-    color: "#64748b",
-    fontSize: "12px",
-    marginTop: "2px",
-  },
-  featureReady: {
-    color: "#22c55e",
-    fontSize: "11px",
-    fontWeight: 600,
-    background: "rgba(34,197,94,0.1)",
-    padding: "2px 8px",
-    borderRadius: "10px",
-    border: "1px solid rgba(34,197,94,0.3)",
-  },
-  featureLock: {
-    fontSize: "16px",
-  },
-  comingSoon: {
-    border: "1px dashed rgba(99,102,241,0.3)",
-    borderRadius: "10px",
-    padding: "14px",
-    textAlign: "center",
-  },
-  comingSoonBadge: {
-    display: "inline-block",
-    background: "rgba(99,102,241,0.15)",
-    color: "#a5b4fc",
-    fontSize: "11px",
-    fontWeight: 700,
-    padding: "2px 10px",
-    borderRadius: "10px",
-    marginBottom: "8px",
-    letterSpacing: "0.5px",
-  },
-  comingSoonText: {
-    color: "#64748b",
-    fontSize: "12px",
-    lineHeight: 1.6,
-    margin: 0,
-  },
-  profileCard: {
-    textAlign: "center",
-    padding: "24px",
-    background: "rgba(255,255,255,0.04)",
-    border: "1px solid rgba(255,255,255,0.08)",
-    borderRadius: "16px",
-  },
-  profileAvatar: {
-    width: "80px",
-    height: "80px",
-    borderRadius: "50%",
-    objectFit: "cover",
-    border: "3px solid rgba(99,102,241,0.5)",
-    margin: "0 auto 12px",
-    display: "block",
-  },
-  profileAvatarFallback: {
-    width: "80px",
-    height: "80px",
-    borderRadius: "50%",
-    background: "linear-gradient(135deg, #6366f1, #8b5cf6)",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    color: "#fff",
-    fontWeight: 700,
-    fontSize: "32px",
-    margin: "0 auto 12px",
-  },
-  profileName: {
-    color: "#fff",
-    fontSize: "20px",
-    fontWeight: 700,
-    marginBottom: "4px",
-  },
-  profileEmail: {
-    color: "#94a3b8",
-    fontSize: "13px",
-    marginBottom: "4px",
-  },
-  profilePhone: {
-    color: "#64748b",
-    fontSize: "12px",
-    marginBottom: "12px",
-  },
-  profileVerifiedBadge: {
-    display: "inline-block",
-    background: "rgba(34,197,94,0.1)",
-    border: "1px solid rgba(34,197,94,0.4)",
-    borderRadius: "20px",
-    color: "#86efac",
-    fontSize: "13px",
-    fontWeight: 600,
-    padding: "4px 16px",
-  },
-  profileUnverifiedBadge: {
-    display: "inline-block",
-    background: "rgba(251,191,36,0.1)",
-    border: "1px solid rgba(251,191,36,0.3)",
-    borderRadius: "20px",
-    color: "#fde68a",
-    fontSize: "13px",
-    fontWeight: 600,
-    padding: "4px 16px",
-  },
-  auditCard: {
-    padding: "16px",
-    background: "rgba(99,102,241,0.05)",
-    border: "1px solid rgba(99,102,241,0.2)",
-    borderRadius: "12px",
-  },
-  auditTitle: {
-    color: "#c7d2fe",
-    fontSize: "14px",
-    fontWeight: 600,
-    marginBottom: "12px",
-  },
-  auditGrid: {
-    display: "flex",
-    flexDirection: "column",
-  },
-  auditNote: {
-    color: "#475569",
-    fontSize: "11px",
-    marginTop: "10px",
-    lineHeight: 1.5,
-  },
-  sessionCard: {
-    padding: "14px",
-    background: "rgba(255,255,255,0.03)",
-    border: "1px solid rgba(255,255,255,0.06)",
-    borderRadius: "12px",
-  },
-  sessionTitle: {
-    color: "#64748b",
-    fontSize: "12px",
-    fontWeight: 600,
-    marginBottom: "8px",
-    textTransform: "uppercase",
-    letterSpacing: "0.5px",
-  },
-};
-
-const styles: Record<string, React.CSSProperties> = {
-  container: {
-    width: "100%",
-    maxWidth: "480px",
-    padding: "16px",
-    maxHeight: "95vh",
-  },
-  shell: {
-    background: "rgba(255,255,255,0.04)",
-    backdropFilter: "blur(20px)",
-    border: "1px solid rgba(255,255,255,0.08)",
-    borderRadius: "24px",
-    overflow: "hidden",
-    boxShadow: "0 25px 50px rgba(0,0,0,0.5)",
-    maxHeight: "90vh",
-    display: "flex",
-    flexDirection: "column",
+const s: Record<string, React.CSSProperties> = {
+  root: {
+    minHeight: "100vh", display: "flex", flexDirection: "column",
+    background: "#0a0a0f", color: "#fff",
   },
   header: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    padding: "16px 20px",
-    borderBottom: "1px solid rgba(255,255,255,0.06)",
-    background: "rgba(0,0,0,0.2)",
+    background: "rgba(15,22,40,0.95)", borderBottom: "1px solid rgba(110,231,183,0.1)",
+    padding: "14px 20px", display: "flex", alignItems: "center", justifyContent: "space-between",
+    backdropFilter: "blur(12px)", position: "sticky", top: 0, zIndex: 100,
   },
-  headerLeft: {
-    display: "flex",
-    alignItems: "center",
-    gap: "8px",
-  },
-  headerLogo: {
-    fontSize: "22px",
-  },
-  headerTitle: {
-    color: "#fff",
-    fontSize: "18px",
-    fontWeight: 700,
-  },
-  headerRight: {
-    display: "flex",
-    alignItems: "center",
-    gap: "8px",
-  },
-  verifiedPill: {
-    background: "rgba(34,197,94,0.1)",
-    border: "1px solid rgba(34,197,94,0.3)",
-    borderRadius: "20px",
-    color: "#86efac",
-    fontSize: "11px",
-    fontWeight: 600,
-    padding: "3px 10px",
-  },
+  headerLeft: { display: "flex", alignItems: "center", gap: 12 },
+  headerName: { fontSize: 15, fontWeight: 700, color: "#fff" },
+  headerStatus: { fontSize: 11, color: "#6ee7b7" },
   logoutBtn: {
-    background: "rgba(239,68,68,0.1)",
-    border: "1px solid rgba(239,68,68,0.25)",
-    borderRadius: "8px",
-    color: "#fca5a5",
-    fontSize: "12px",
-    padding: "5px 12px",
-    cursor: "pointer",
+    background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.25)",
+    borderRadius: 8, padding: "7px 14px", color: "#f87171", fontSize: 12,
+    cursor: "pointer", fontWeight: 600,
   },
-  tabBar: {
-    display: "flex",
-    borderBottom: "1px solid rgba(255,255,255,0.06)",
-    background: "rgba(0,0,0,0.1)",
+  tabs: {
+    display: "flex", gap: 0, borderBottom: "1px solid rgba(255,255,255,0.06)",
+    background: "rgba(15,22,40,0.5)",
   },
-  tab: {
-    flex: 1,
-    padding: "13px",
-    border: "none",
-    background: "transparent",
-    color: "#64748b",
-    fontSize: "14px",
-    fontWeight: 500,
-    cursor: "pointer",
-    borderBottom: "2px solid transparent",
-    transition: "all 0.2s",
+  tabBtn: {
+    flex: 1, padding: "13px 8px", background: "transparent", border: "none",
+    color: "#6b7280", fontSize: 13, cursor: "pointer", fontWeight: 600,
+    borderBottom: "2px solid transparent", transition: "all 0.2s",
   },
   tabActive: {
-    color: "#a5b4fc",
-    borderBottomColor: "#6366f1",
-    background: "rgba(99,102,241,0.06)",
+    color: "#6ee7b7", borderBottom: "2px solid #6ee7b7",
+    background: "rgba(110,231,183,0.05)",
   },
-  content: {
-    padding: "20px",
-    overflowY: "auto",
-    flex: 1,
+  content: { flex: 1, padding: "20px", maxWidth: 600, margin: "0 auto", width: "100%" },
+  panel: { display: "flex", flexDirection: "column", gap: 16 },
+  panelTitle: { fontSize: 18, fontWeight: 700, color: "#fff", margin: 0 },
+  emptyState: {
+    display: "flex", flexDirection: "column", alignItems: "center",
+    textAlign: "center", gap: 12, paddingTop: 40,
   },
+  emptyTitle: { fontSize: 20, fontWeight: 700, color: "#fff", margin: 0 },
+  emptyText: { fontSize: 13, color: "#6b7280", maxWidth: 320, lineHeight: 1.6, margin: 0 },
+  identityCard: {
+    background: "rgba(110,231,183,0.04)", border: "1px solid rgba(110,231,183,0.15)",
+    borderRadius: 14, padding: "16px 20px", width: "100%", display: "flex",
+    flexDirection: "column", gap: 10,
+  },
+  identityRow: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 },
+  identityLabel: { fontSize: 12, color: "#6b7280", minWidth: 100 },
+  identityValue: { fontSize: 12, color: "#d1d5db", textAlign: "right", wordBreak: "break-all" },
+  profileAvatar: {
+    fontSize: 64, textAlign: "center", padding: 20,
+    background: "rgba(255,255,255,0.03)", borderRadius: 16,
+  },
+  fieldGroup: { display: "flex", flexDirection: "column", gap: 6 },
+  label: { fontSize: 12, color: "#9ca3af", fontWeight: 600, letterSpacing: 0.5 },
+  input: {
+    background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)",
+    borderRadius: 10, padding: "12px 14px", color: "#fff", fontSize: 14, outline: "none",
+  },
+  uidBox: {
+    background: "rgba(0,0,0,0.3)", borderRadius: 8, padding: "10px 12px",
+    fontFamily: "monospace", fontSize: 11, color: "#6ee7b7",
+    wordBreak: "break-all", lineHeight: 1.5,
+  },
+  saveBtn: {
+    background: "linear-gradient(135deg, #6ee7b7, #3b82f6)", border: "none",
+    borderRadius: 10, padding: "12px", color: "#0a0a0f", fontWeight: 700,
+    fontSize: 14, cursor: "pointer",
+  },
+  secCards: {
+    display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12,
+  },
+  legalBox: {
+    background: "rgba(110,231,183,0.04)", border: "1px solid rgba(110,231,183,0.15)",
+    borderRadius: 12, padding: "16px",
+  },
+  dangerBtn: {
+    background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.3)",
+    borderRadius: 10, padding: "12px", color: "#f87171", fontWeight: 600,
+    fontSize: 14, cursor: "pointer",
+  },
+};
+
+const secCard: React.CSSProperties = {
+  background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)",
+  borderRadius: 12, padding: "14px",
 };

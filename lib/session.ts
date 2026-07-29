@@ -1,108 +1,54 @@
-/**
- * Client-side session utilities for Confi.
- * Real JWT signing happens server-side; this manages the local session state.
- */
-
-export interface ConfiSession {
+export interface SessionUser {
+  uid: string;
   email: string;
   displayName: string;
   avatar: string;
-  phone: string;
-  createdAt: string;
-  sessionToken: string;
-  refreshToken: string;
-  pinHash: string | null;
-  biometricEnabled: boolean;
-  lastActive: number;
+  deviceFingerprint: string;
+  sessionId: string;
+  lastSeen: number;
+  consentTimestamp: number;
+  consentVersion?: string;
 }
 
 const SESSION_KEY = "confi_session";
-const REFRESH_KEY = "confi_refresh";
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
-export function generateSecureToken(length = 64): string {
-  const arr = new Uint8Array(length / 2);
-  crypto.getRandomValues(arr);
-  return Array.from(arr, (b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-export function saveSession(session: ConfiSession): void {
+export function saveSession(user: SessionUser): void {
+  const payload = { ...user, lastSeen: Date.now() };
   try {
-    localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-    localStorage.setItem(REFRESH_KEY, session.refreshToken);
-  } catch (e) {
-    console.warn("Failed to save session:", e);
+    localStorage.setItem(SESSION_KEY, JSON.stringify(payload));
+  } catch {
+    // storage quota exceeded or SSR
   }
 }
 
-export function loadSession(): ConfiSession | null {
+export function getSession(): SessionUser | null {
   try {
     const raw = localStorage.getItem(SESSION_KEY);
     if (!raw) return null;
-    const session: ConfiSession = JSON.parse(raw);
-    // Check session TTL
-    if (Date.now() - session.lastActive > SESSION_TTL_MS) {
+    const parsed: SessionUser = JSON.parse(raw);
+    if (!parsed.uid || !parsed.email) return null;
+    // Check TTL
+    if (Date.now() - parsed.lastSeen > SESSION_TTL_MS) {
       clearSession();
       return null;
     }
-    return session;
+    // Refresh lastSeen
+    saveSession(parsed);
+    return parsed;
   } catch {
     return null;
   }
 }
 
 export function clearSession(): void {
-  localStorage.removeItem(SESSION_KEY);
-  localStorage.removeItem(REFRESH_KEY);
-}
-
-export function refreshSession(session: ConfiSession): ConfiSession {
-  const refreshed: ConfiSession = {
-    ...session,
-    sessionToken: generateSecureToken(),
-    lastActive: Date.now(),
-  };
-  saveSession(refreshed);
-  return refreshed;
-}
-
-export function touchSession(): void {
-  const session = loadSession();
-  if (session) {
-    session.lastActive = Date.now();
-    saveSession(session);
-  }
-}
-
-/**
- * PIN hashing — deterministic browser-safe hash.
- * Actual bcrypt hashing happens server-side via /api/auth.
- */
-export function hashPinClient(pin: string): string {
-  const salted = `confi_v1_${pin}_${pin.length}_secure`;
-  let h = 0x811c9dc5;
-  for (let i = 0; i < salted.length; i++) {
-    h ^= salted.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  const a = (h >>> 0).toString(36);
-  const b = (Math.imul(h, 0xdeadbeef) >>> 0).toString(36);
-  return `cpv1_${a}_${b}_${pin.length}`;
-}
-
-export function verifyPinClient(pin: string, stored: string): boolean {
-  return hashPinClient(pin) === stored;
-}
-
-/**
- * Check if Web Authentication API (biometrics) is available
- */
-export async function isBiometricAvailable(): Promise<boolean> {
   try {
-    if (!window.PublicKeyCredential) return false;
-    const available = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
-    return available;
+    localStorage.removeItem(SESSION_KEY);
   } catch {
-    return false;
+    // ignore
   }
+}
+
+export function isSessionBoundToDevice(user: SessionUser, currentFingerprint: string): boolean {
+  return user.deviceFingerprint === currentFingerprint;
 }

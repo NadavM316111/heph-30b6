@@ -6,81 +6,67 @@
 
 html, body {
   height: 100%;
-  background: #0a0f1e;
+  background: #0a0a0f;
   color: #ffffff;
-  font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family: 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  overscroll-behavior: none;
 }
 
-#__next, main {
-  min-height: 100vh;
+#__next {
+  height: 100%;
 }
 
-/* Scrollbar */
-::-webkit-scrollbar { width: 4px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
-
-/* Input resets */
-input, select, textarea {
+input, button, textarea, select {
   font-family: inherit;
-  color: #fff;
-  background: transparent;
 }
 
-input::placeholder {
-  color: rgba(255,255,255,0.3);
+button:disabled {
+  cursor: not-allowed;
 }
 
-select option {
-  background: #0d1a2d;
-  color: #fff;
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 4px;
 }
 
-input:-webkit-autofill,
-input:-webkit-autofill:hover,
-input:-webkit-autofill:focus {
-  -webkit-box-shadow: 0 0 0 1000px #0d1a2d inset !important;
-  -webkit-text-fill-color: #fff !important;
-  border-color: rgba(0,200,150,0.5) !important;
+::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.02);
 }
 
-/* Animations */
-@keyframes spin {
-  to { transform: rotate(360deg); }
+::-webkit-scrollbar-thumb {
+  background: rgba(110, 231, 183, 0.2);
+  border-radius: 2px;
 }
 
-@keyframes pulse {
-  0%, 100% { transform: scale(1); opacity: 1; }
-  50% { transform: scale(1.05); opacity: 0.85; }
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(110, 231, 183, 0.4);
 }
 
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateX(-50%) translateY(-10px); }
-  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+/* Input focus styles */
+input:focus {
+  border-color: rgba(110, 231, 183, 0.5) !important;
+  box-shadow: 0 0 0 2px rgba(110, 231, 183, 0.08);
 }
 
-@keyframes slideUp {
-  from { opacity: 0; transform: translateY(20px); }
-  to { opacity: 1; transform: translateY(0); }
+/* Smooth transitions */
+* {
+  transition: background-color 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
 }
 
-/* Focus ring */
-button:focus-visible, input:focus-visible, select:focus-visible {
-  outline: 2px solid #00c896;
+/* Prevent button focus outlines from looking bad */
+button:focus-visible {
+  outline: 2px solid rgba(110, 231, 183, 0.6);
   outline-offset: 2px;
 }
 
-/* Remove default number input spinners */
-input[type=number]::-webkit-outer-spin-button,
-input[type=number]::-webkit-inner-spin-button {
-  -webkit-appearance: none;
+/* Prevent layout shift on scroll */
+html {
+  scroll-behavior: smooth;
 }
 
-/* Selection */
-::selection {
-  background: rgba(0,200,150,0.3);
-  color: #fff;
+@media (max-width: 480px) {
+  input, button {
+    font-size: 16px !important; /* Prevent zoom on mobile */
+  }
 }

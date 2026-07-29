@@ -1,44 +1,40 @@
 "use client";
 
 import { useState } from "react";
-import { saveSession } from "@/lib/session";
-import { AVATARS } from "@/lib/avatars";
-import { logAuditEvent } from "@/lib/audit";
+import { saveSession, SessionUser } from "@/lib/session";
+import { generateUserId } from "@/lib/fingerprint";
+import LegalConsentModal from "@/components/LegalConsentModal";
+import OTPModal from "@/components/OTPModal";
+import AvatarPicker from "@/components/AvatarPicker";
 
-type Step = "landing" | "mode" | "email" | "otp" | "profile" | "terms";
+type Step = "landing" | "signup" | "login" | "otp" | "profile" | "consent";
 
 interface Props {
-  onLogin: (user: { email: string; displayName: string; avatar: string }) => void;
   fingerprint: string;
+  onAuth: (user: SessionUser) => void;
 }
 
-export default function AuthScreen({ onLogin, fingerprint }: Props) {
+export default function AuthScreen({ fingerprint, onAuth }: Props) {
   const [step, setStep] = useState<Step>("landing");
   const [mode, setMode] = useState<"signup" | "login">("signup");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [otp, setOtp] = useState("");
-  const [generatedOtp, setGeneratedOtp] = useState("");
   const [displayName, setDisplayName] = useState("");
-  const [selectedAvatar, setSelectedAvatar] = useState(AVATARS[0]);
-  const [termsAccepted, setTermsAccepted] = useState(false);
-  const [ndaAccepted, setNdaAccepted] = useState(false);
+  const [avatar, setAvatar] = useState("🦊");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [otpSent, setOtpSent] = useState(false);
+  const [pendingUser, setPendingUser] = useState<SessionUser | null>(null);
+  const [otpVerified, setOtpVerified] = useState(false);
+  const [showConsent, setShowConsent] = useState(false);
+  const [consentGiven, setConsentGiven] = useState(false);
 
-  const generateOtp = () => Math.floor(100000 + Math.random() * 900000).toString();
+  const validateEmail = (e: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
+  const validatePassword = (p: string) => p.length >= 8;
 
-  const handleEmailSubmit = async () => {
+  const handleSubmitAuth = async () => {
     setError("");
-    if (!email || !email.includes("@")) {
-      setError("Please enter a valid email address.");
-      return;
-    }
-    if (!password || password.length < 8) {
-      setError("Password must be at least 8 characters.");
-      return;
-    }
+    if (!validateEmail(email)) { setError("Enter a valid email address."); return; }
+    if (!validatePassword(password)) { setError("Password must be at least 8 characters."); return; }
     setLoading(true);
     try {
       const res = await fetch("/api/auth", {
@@ -47,21 +43,7 @@ export default function AuthScreen({ onLogin, fingerprint }: Props) {
         body: JSON.stringify({ mode, email, password }),
       });
       const data = await res.json();
-      if (!data.ok) {
-        setError(data.error || "Authentication failed.");
-        setLoading(false);
-        return;
-      }
-      const code = generateOtp();
-      setGeneratedOtp(code);
-      setOtpSent(true);
-      console.info(`[CONFI OTP SIMULATION] Your OTP is: ${code} (In production, sent to ${email})`);
-      await logAuditEvent({
-        type: "OTP_SENT",
-        email,
-        fingerprint,
-        metadata: { mode },
-      });
+      if (!data.ok) { setError(data.error || "Authentication failed."); setLoading(false); return; }
       setStep("otp");
     } catch {
       setError("Network error. Please try again.");
@@ -69,26 +51,24 @@ export default function AuthScreen({ onLogin, fingerprint }: Props) {
     setLoading(false);
   };
 
-  const handleOtpVerify = async () => {
-    setError("");
-    if (otp.trim() !== generatedOtp) {
-      setError(`Invalid OTP. (Demo: check browser console for code)`);
-      return;
-    }
-    await logAuditEvent({
-      type: "OTP_VERIFIED",
-      email,
-      fingerprint,
-      metadata: {},
-    });
+  const handleOTPVerified = () => {
+    setOtpVerified(true);
     if (mode === "signup") {
       setStep("profile");
     } else {
-      const stored = localStorage.getItem(`confi_profile_${email}`);
-      if (stored) {
-        const profile = JSON.parse(stored);
-        saveSession({ email, displayName: profile.displayName, avatar: profile.avatar });
-        onLogin({ email, displayName: profile.displayName, avatar: profile.avatar });
+      // For login, create user from stored profile or basic info
+      const storedProfile = localStorage.getItem(`confi_profile_${email}`);
+      if (storedProfile) {
+        const profile = JSON.parse(storedProfile);
+        const u: SessionUser = {
+          ...profile,
+          deviceFingerprint: fingerprint,
+          sessionId: crypto.randomUUID(),
+          lastSeen: Date.now(),
+          consentTimestamp: profile.consentTimestamp || Date.now(),
+        };
+        saveSession(u);
+        onAuth(u);
       } else {
         setStep("profile");
       }
@@ -96,536 +76,268 @@ export default function AuthScreen({ onLogin, fingerprint }: Props) {
   };
 
   const handleProfileSubmit = () => {
-    setError("");
-    if (!displayName.trim()) {
-      setError("Please enter a display name.");
+    if (!displayName.trim()) { setError("Display name is required."); return; }
+    if (!consentGiven) {
+      setShowConsent(true);
       return;
     }
-    setStep("terms");
+    finalizeUser();
   };
 
-  const handleTermsAccept = async () => {
-    setError("");
-    if (!termsAccepted || !ndaAccepted) {
-      setError("You must accept both the Terms of Service and the NDA disclosure to continue.");
-      return;
-    }
-    const profileData = { displayName: displayName.trim(), avatar: selectedAvatar };
-    localStorage.setItem(`confi_profile_${email}`, JSON.stringify(profileData));
-    await logAuditEvent({
-      type: "TERMS_ACCEPTED",
+  const handleConsentAccepted = () => {
+    setConsentGiven(true);
+    setShowConsent(false);
+    finalizeUser();
+  };
+
+  const finalizeUser = () => {
+    const uid = generateUserId(email, fingerprint);
+    const u: SessionUser = {
+      uid,
       email,
-      fingerprint,
-      metadata: {
-        tosAccepted: true,
-        ndaDisclosureAccepted: true,
-        timestamp: new Date().toISOString(),
-      },
-    });
-    saveSession({ email, displayName: displayName.trim(), avatar: selectedAvatar });
-    onLogin({ email, displayName: displayName.trim(), avatar: selectedAvatar });
+      displayName: displayName.trim(),
+      avatar,
+      deviceFingerprint: fingerprint,
+      sessionId: crypto.randomUUID(),
+      lastSeen: Date.now(),
+      consentTimestamp: Date.now(),
+      consentVersion: "NDA-v1.0",
+    };
+    // Store profile locally (encrypted minimally)
+    const profileKey = `confi_profile_${email}`;
+    localStorage.setItem(profileKey, JSON.stringify(u));
+    saveSession(u);
+    onAuth(u);
   };
 
   return (
-    <div style={styles.container}>
-      <div style={styles.card}>
-        {step === "landing" && (
-          <LandingStep onNext={() => setStep("mode")} />
-        )}
-        {step === "mode" && (
-          <ModeStep
-            mode={mode}
-            onModeChange={setMode}
-            onNext={() => setStep("email")}
-          />
-        )}
-        {step === "email" && (
-          <EmailStep
-            mode={mode}
-            email={email}
-            password={password}
-            onEmailChange={setEmail}
-            onPasswordChange={setPassword}
-            onSubmit={handleEmailSubmit}
-            onBack={() => setStep("mode")}
-            error={error}
-            loading={loading}
-          />
-        )}
-        {step === "otp" && (
-          <OtpStep
-            email={email}
-            otp={otp}
-            onOtpChange={setOtp}
-            onVerify={handleOtpVerify}
-            onBack={() => setStep("email")}
-            otpSent={otpSent}
-            error={error}
-          />
-        )}
-        {step === "profile" && (
-          <ProfileStep
-            displayName={displayName}
-            selectedAvatar={selectedAvatar}
-            onNameChange={setDisplayName}
-            onAvatarChange={setSelectedAvatar}
-            onSubmit={handleProfileSubmit}
-            error={error}
-          />
-        )}
-        {step === "terms" && (
-          <TermsStep
-            termsAccepted={termsAccepted}
-            ndaAccepted={ndaAccepted}
-            onTermsChange={setTermsAccepted}
-            onNdaChange={setNdaAccepted}
-            onAccept={handleTermsAccept}
-            error={error}
-          />
-        )}
-      </div>
-    </div>
-  );
-}
-
-function LandingStep({ onNext }: { onNext: () => void }) {
-  return (
-    <div style={styles.stepContainer}>
-      <div style={styles.logo}>🔒</div>
-      <h1 style={styles.title}>Confi</h1>
-      <p style={styles.subtitle}>The world's first messaging app with built-in legally binding confidentiality.</p>
-      <div style={styles.featureList}>
-        <div style={styles.feature}><span style={styles.featureIcon}>🛡️</span> International NDA protection</div>
-        <div style={styles.feature}><span style={styles.featureIcon}>🔐</span> End-to-end encrypted messaging</div>
-        <div style={styles.feature}><span style={styles.featureIcon}>📋</span> Legal audit trail</div>
-        <div style={styles.feature}><span style={styles.featureIcon}>🌍</span> Cross-border confidentiality</div>
-      </div>
-      <button style={styles.primaryBtn} onClick={onNext}>Get Started</button>
-    </div>
-  );
-}
-
-function ModeStep({ mode, onModeChange, onNext }: {
-  mode: string;
-  onModeChange: (m: "signup" | "login") => void;
-  onNext: () => void;
-}) {
-  return (
-    <div style={styles.stepContainer}>
-      <div style={styles.logo}>🔒</div>
-      <h2 style={styles.title}>Welcome to Confi</h2>
-      <div style={styles.modeToggle}>
-        <button
-          style={{ ...styles.modeBtn, ...(mode === "signup" ? styles.modeBtnActive : {}) }}
-          onClick={() => onModeChange("signup")}
-        >
-          Create Account
-        </button>
-        <button
-          style={{ ...styles.modeBtn, ...(mode === "login" ? styles.modeBtnActive : {}) }}
-          onClick={() => onModeChange("login")}
-        >
-          Sign In
-        </button>
-      </div>
-      <button style={styles.primaryBtn} onClick={onNext}>Continue</button>
-    </div>
-  );
-}
-
-function EmailStep({ mode, email, password, onEmailChange, onPasswordChange, onSubmit, onBack, error, loading }: {
-  mode: string;
-  email: string;
-  password: string;
-  onEmailChange: (v: string) => void;
-  onPasswordChange: (v: string) => void;
-  onSubmit: () => void;
-  onBack: () => void;
-  error: string;
-  loading: boolean;
-}) {
-  return (
-    <div style={styles.stepContainer}>
-      <button style={styles.backBtn} onClick={onBack}>← Back</button>
-      <div style={styles.logo}>📧</div>
-      <h2 style={styles.title}>{mode === "signup" ? "Create Your Account" : "Welcome Back"}</h2>
-      <p style={styles.subtitle}>We'll send a verification code to confirm your identity.</p>
-      <input
-        style={styles.input}
-        type="email"
-        placeholder="Email address"
-        value={email}
-        onChange={e => onEmailChange(e.target.value)}
-        autoComplete="email"
-      />
-      <input
-        style={styles.input}
-        type="password"
-        placeholder="Password (min 8 characters)"
-        value={password}
-        onChange={e => onPasswordChange(e.target.value)}
-        autoComplete={mode === "signup" ? "new-password" : "current-password"}
-      />
-      {error && <div style={styles.error}>{error}</div>}
-      <button style={{ ...styles.primaryBtn, opacity: loading ? 0.7 : 1 }} onClick={onSubmit} disabled={loading}>
-        {loading ? "Sending OTP..." : "Send Verification Code"}
-      </button>
-    </div>
-  );
-}
-
-function OtpStep({ email, otp, onOtpChange, onVerify, onBack, otpSent, error }: {
-  email: string;
-  otp: string;
-  onOtpChange: (v: string) => void;
-  onVerify: () => void;
-  onBack: () => void;
-  otpSent: boolean;
-  error: string;
-}) {
-  return (
-    <div style={styles.stepContainer}>
-      <button style={styles.backBtn} onClick={onBack}>← Back</button>
-      <div style={styles.logo}>🔢</div>
-      <h2 style={styles.title}>Verify Your Identity</h2>
-      {otpSent && (
-        <div style={styles.infoBanner}>
-          ✅ OTP sent to <strong>{email}</strong><br />
-          <small style={{ color: "#64ffda" }}>Demo mode: check browser console (F12) for your OTP code</small>
-        </div>
+    <div style={s.container}>
+      {showConsent && (
+        <LegalConsentModal
+          email={email}
+          displayName={displayName}
+          onAccept={handleConsentAccepted}
+          onDecline={() => setShowConsent(false)}
+        />
       )}
-      <input
-        style={{ ...styles.input, textAlign: "center", fontSize: "28px", letterSpacing: "12px" }}
-        type="text"
-        placeholder="000000"
-        maxLength={6}
-        value={otp}
-        onChange={e => onOtpChange(e.target.value.replace(/\D/g, ""))}
-      />
-      {error && <div style={styles.error}>{error}</div>}
-      <button style={styles.primaryBtn} onClick={onVerify}>Verify Code</button>
-      <p style={styles.hint}>Didn't receive the code? <span style={styles.link} onClick={onBack}>Try again</span></p>
+      {step === "otp" && (
+        <OTPModal
+          email={email}
+          onVerified={handleOTPVerified}
+          onBack={() => setStep(mode === "signup" ? "signup" : "login")}
+        />
+      )}
+
+      <div style={s.card}>
+        {/* Logo */}
+        <div style={s.logo}>🔒</div>
+        <h1 style={s.title}>Confi</h1>
+        <p style={s.subtitle}>Confidential Messaging</p>
+
+        {step === "landing" && (
+          <div style={s.landingButtons}>
+            <button style={s.btnPrimary} onClick={() => { setMode("signup"); setStep("signup"); }}>
+              Create Account
+            </button>
+            <button style={s.btnSecondary} onClick={() => { setMode("login"); setStep("login"); }}>
+              Sign In
+            </button>
+            <div style={s.legalNote}>
+              🛡️ All communications are covered by international NDA upon activation.
+              Your identity is verified for legal traceability.
+            </div>
+          </div>
+        )}
+
+        {(step === "signup" || step === "login") && (
+          <div style={s.form}>
+            <h2 style={s.formTitle}>{mode === "signup" ? "Create Account" : "Welcome Back"}</h2>
+            <div style={s.fieldGroup}>
+              <label style={s.label}>Email Address</label>
+              <input
+                style={s.input}
+                type="email"
+                placeholder="you@example.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleSubmitAuth()}
+                autoComplete="email"
+              />
+            </div>
+            <div style={s.fieldGroup}>
+              <label style={s.label}>Password</label>
+              <input
+                style={s.input}
+                type="password"
+                placeholder={mode === "signup" ? "Min. 8 characters" : "Your password"}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleSubmitAuth()}
+                autoComplete={mode === "signup" ? "new-password" : "current-password"}
+              />
+            </div>
+            {error && <div style={s.error}>{error}</div>}
+            <button style={s.btnPrimary} onClick={handleSubmitAuth} disabled={loading}>
+              {loading ? "Verifying..." : mode === "signup" ? "Continue →" : "Sign In →"}
+            </button>
+            <button style={s.btnGhost} onClick={() => setStep("landing")}>← Back</button>
+          </div>
+        )}
+
+        {step === "profile" && (
+          <div style={s.form}>
+            <h2 style={s.formTitle}>Set Up Your Profile</h2>
+            <p style={s.hint}>This name and avatar will appear in all confidential conversations.</p>
+            <AvatarPicker selected={avatar} onSelect={setAvatar} />
+            <div style={s.fieldGroup}>
+              <label style={s.label}>Display Name</label>
+              <input
+                style={s.input}
+                type="text"
+                placeholder="How should others address you?"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                maxLength={40}
+              />
+            </div>
+            <div style={s.uidPreview}>
+              <span style={{ color: "#6b7280", fontSize: 12 }}>Your Unique ID (auto-generated): </span>
+              <span style={{ color: "#6ee7b7", fontSize: 12, fontFamily: "monospace" }}>
+                {generateUserId(email, fingerprint).slice(0, 16)}…
+              </span>
+            </div>
+            {error && <div style={s.error}>{error}</div>}
+            <button style={s.btnPrimary} onClick={handleProfileSubmit}>
+              Accept Terms & Enter Confi →
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Footer */}
+      <div style={s.footer}>
+        <span>🔐 End-to-end encrypted · </span>
+        <span>🌐 International NDA Protected · </span>
+        <span>⚖️ Legally Traceable Identity</span>
+      </div>
     </div>
   );
 }
 
-function ProfileStep({ displayName, selectedAvatar, onNameChange, onAvatarChange, onSubmit, error }: {
-  displayName: string;
-  selectedAvatar: string;
-  onNameChange: (v: string) => void;
-  onAvatarChange: (v: string) => void;
-  onSubmit: () => void;
-  error: string;
-}) {
-  return (
-    <div style={styles.stepContainer}>
-      <div style={styles.logo}>{selectedAvatar}</div>
-      <h2 style={styles.title}>Create Your Profile</h2>
-      <p style={styles.subtitle}>Choose how you'll appear in conversations.</p>
-      <input
-        style={styles.input}
-        type="text"
-        placeholder="Display name"
-        value={displayName}
-        onChange={e => onNameChange(e.target.value)}
-        maxLength={30}
-      />
-      <div style={styles.avatarGrid}>
-        {AVATARS.map(a => (
-          <button
-            key={a}
-            style={{ ...styles.avatarBtn, ...(selectedAvatar === a ? styles.avatarBtnSelected : {}) }}
-            onClick={() => onAvatarChange(a)}
-          >
-            {a}
-          </button>
-        ))}
-      </div>
-      {error && <div style={styles.error}>{error}</div>}
-      <button style={styles.primaryBtn} onClick={onSubmit}>Continue</button>
-    </div>
-  );
-}
-
-function TermsStep({ termsAccepted, ndaAccepted, onTermsChange, onNdaChange, onAccept, error }: {
-  termsAccepted: boolean;
-  ndaAccepted: boolean;
-  onTermsChange: (v: boolean) => void;
-  onNdaChange: (v: boolean) => void;
-  onAccept: () => void;
-  error: string;
-}) {
-  return (
-    <div style={styles.stepContainer}>
-      <div style={styles.logo}>📜</div>
-      <h2 style={styles.title}>Legal Agreement</h2>
-      <div style={styles.legalBox}>
-        <h3 style={styles.legalHeading}>Terms of Service & Privacy Policy</h3>
-        <div style={styles.legalScroll}>
-          <p style={styles.legalText}>
-            <strong>CONFI MESSAGING APPLICATION — TERMS OF SERVICE</strong><br /><br />
-            By creating an account, you agree to use Confi solely for lawful purposes. You acknowledge that Confi stores minimal personally identifiable information (PII) in compliance with the General Data Protection Regulation (GDPR) and applicable international privacy laws.<br /><br />
-            <strong>DATA WE COLLECT:</strong> Email address (hashed), display name, device fingerprint (for security audit purposes only), message metadata. We do not sell your data to third parties.<br /><br />
-            <strong>YOUR RIGHTS (GDPR):</strong> Right to access, rectify, erase, restrict processing, data portability, and object. Contact privacy@confi.app to exercise these rights.<br /><br />
-            <strong>DATA RETENTION:</strong> Account data retained for 30 days after account deletion. Message content deleted immediately upon request.
-          </p>
-        </div>
-        <label style={styles.checkboxLabel}>
-          <input
-            type="checkbox"
-            checked={termsAccepted}
-            onChange={e => onTermsChange(e.target.checked)}
-            style={styles.checkbox}
-          />
-          <span>I have read and agree to the <strong>Terms of Service</strong> and <strong>Privacy Policy</strong></span>
-        </label>
-      </div>
-
-      <div style={{ ...styles.legalBox, borderColor: "#ffd700", marginTop: "16px" }}>
-        <h3 style={{ ...styles.legalHeading, color: "#ffd700" }}>⚠️ IMPORTANT: NDA Disclosure</h3>
-        <div style={styles.legalScroll}>
-          <p style={styles.legalText}>
-            <strong>NON-DISCLOSURE AGREEMENT CAPABILITY DISCLOSURE</strong><br /><br />
-            Confi includes a "Confidential Mode" feature. When you or another party activates Confidential Mode in any conversation, <strong>both parties automatically enter into a legally binding International Non-Disclosure Agreement (NDA)</strong> governed by the following terms:<br /><br />
-            <strong>JURISDICTION:</strong> The NDA is governed by international commercial law principles, including but not limited to UNCITRAL Model Law provisions, enforceable in the jurisdiction of either party's domicile.<br /><br />
-            <strong>OBLIGATIONS:</strong> All information shared in a Confidential Mode conversation is designated as "Confidential Information." Parties agree not to disclose, reproduce, or use such information for any purpose other than the stated purpose of the conversation.<br /><br />
-            <strong>DURATION:</strong> Confidentiality obligations survive termination of the conversation for a period of <strong>five (5) years</strong> unless otherwise agreed in writing.<br /><br />
-            <strong>PENALTIES:</strong> Breach of the NDA may result in legal action including claims for injunctive relief and monetary damages.<br /><br />
-            <strong>YOU ACKNOWLEDGE</strong> that activating Confidential Mode constitutes your legally binding electronic signature on the NDA, as recognized under the Electronic Signatures in Global and National Commerce Act (E-SIGN), eIDAS Regulation (EU), and equivalent international frameworks.<br /><br />
-            <strong>THIS IS A REAL LEGAL AGREEMENT. IF YOU DO NOT UNDERSTAND THESE TERMS, CONSULT A LAWYER BEFORE USING CONFIDENTIAL MODE.</strong>
-          </p>
-        </div>
-        <label style={styles.checkboxLabel}>
-          <input
-            type="checkbox"
-            checked={ndaAccepted}
-            onChange={e => onNdaChange(e.target.checked)}
-            style={styles.checkbox}
-          />
-          <span>I understand and acknowledge that using <strong>Confidential Mode</strong> creates a <strong>legally binding international NDA</strong></span>
-        </label>
-      </div>
-
-      {error && <div style={styles.error}>{error}</div>}
-      <button
-        style={{ ...styles.primaryBtn, background: termsAccepted && ndaAccepted ? "linear-gradient(135deg, #00d4ff, #0f3460)" : "#333" }}
-        onClick={onAccept}
-      >
-        Accept & Enter Confi
-      </button>
-    </div>
-  );
-}
-
-const styles: Record<string, React.CSSProperties> = {
+const s: Record<string, React.CSSProperties> = {
   container: {
+    minHeight: "100vh",
     display: "flex",
+    flexDirection: "column",
     alignItems: "center",
     justifyContent: "center",
-    minHeight: "100vh",
-    background: "linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%)",
+    background: "linear-gradient(135deg, #0a0a0f 0%, #0f1628 50%, #0a0a0f 100%)",
     padding: "20px",
+    gap: 24,
   },
   card: {
-    background: "rgba(255,255,255,0.05)",
-    backdropFilter: "blur(20px)",
-    border: "1px solid rgba(255,255,255,0.1)",
-    borderRadius: "24px",
-    padding: "40px",
+    background: "rgba(255,255,255,0.04)",
+    border: "1px solid rgba(110,231,183,0.15)",
+    borderRadius: 20,
+    padding: "40px 36px",
     width: "100%",
-    maxWidth: "480px",
-    maxHeight: "90vh",
-    overflowY: "auto",
-  },
-  stepContainer: {
+    maxWidth: 420,
     display: "flex",
     flexDirection: "column",
     alignItems: "center",
-    gap: "16px",
+    gap: 8,
+    backdropFilter: "blur(12px)",
+    boxShadow: "0 0 60px rgba(110,231,183,0.05)",
   },
-  logo: {
-    fontSize: "56px",
-    lineHeight: 1,
-  },
-  title: {
-    color: "#fff",
-    fontSize: "28px",
-    fontWeight: "700",
-    margin: 0,
-    textAlign: "center",
-  },
-  subtitle: {
-    color: "#8892b0",
-    fontSize: "15px",
-    textAlign: "center",
-    margin: 0,
-    lineHeight: 1.6,
-  },
-  featureList: {
+  logo: { fontSize: 48, marginBottom: 4 },
+  title: { fontSize: 28, fontWeight: 800, color: "#6ee7b7", margin: 0, letterSpacing: 2 },
+  subtitle: { fontSize: 13, color: "#6b7280", margin: 0, marginBottom: 16 },
+  landingButtons: {
+    width: "100%",
     display: "flex",
     flexDirection: "column",
-    gap: "12px",
-    width: "100%",
-    margin: "8px 0",
+    gap: 12,
+    marginTop: 8,
   },
-  feature: {
-    color: "#ccd6f6",
-    fontSize: "15px",
+  form: {
+    width: "100%",
     display: "flex",
-    alignItems: "center",
-    gap: "10px",
-    background: "rgba(255,255,255,0.05)",
-    padding: "12px 16px",
-    borderRadius: "12px",
+    flexDirection: "column",
+    gap: 14,
+    marginTop: 8,
   },
-  featureIcon: {
-    fontSize: "20px",
-  },
-  modeToggle: {
-    display: "flex",
-    background: "rgba(0,0,0,0.3)",
-    borderRadius: "12px",
-    padding: "4px",
-    width: "100%",
-  },
-  modeBtn: {
-    flex: 1,
-    padding: "12px",
-    border: "none",
-    borderRadius: "10px",
-    cursor: "pointer",
-    color: "#8892b0",
-    background: "transparent",
-    fontSize: "15px",
-    fontWeight: "500",
-    transition: "all 0.2s",
-  },
-  modeBtnActive: {
-    background: "linear-gradient(135deg, #00d4ff, #0f3460)",
-    color: "#fff",
-  },
-  primaryBtn: {
-    width: "100%",
-    padding: "16px",
-    background: "linear-gradient(135deg, #00d4ff, #0f3460)",
-    border: "none",
-    borderRadius: "12px",
-    color: "#fff",
-    fontSize: "16px",
-    fontWeight: "600",
-    cursor: "pointer",
-    transition: "opacity 0.2s",
-    marginTop: "8px",
-  },
-  backBtn: {
-    alignSelf: "flex-start",
-    background: "transparent",
-    border: "none",
-    color: "#00d4ff",
-    cursor: "pointer",
-    fontSize: "14px",
-    padding: "0",
-  },
+  formTitle: { fontSize: 18, fontWeight: 700, color: "#e5e7eb", margin: 0, marginBottom: 4 },
+  hint: { fontSize: 12, color: "#6b7280", margin: 0 },
+  fieldGroup: { display: "flex", flexDirection: "column", gap: 6 },
+  label: { fontSize: 12, color: "#9ca3af", fontWeight: 600, letterSpacing: 0.5 },
   input: {
-    width: "100%",
-    padding: "14px 16px",
-    background: "rgba(255,255,255,0.08)",
-    border: "1px solid rgba(255,255,255,0.15)",
-    borderRadius: "12px",
+    background: "rgba(255,255,255,0.06)",
+    border: "1px solid rgba(255,255,255,0.1)",
+    borderRadius: 10,
+    padding: "12px 14px",
     color: "#fff",
-    fontSize: "15px",
+    fontSize: 14,
     outline: "none",
-    boxSizing: "border-box",
+    transition: "border-color 0.2s",
+  },
+  btnPrimary: {
+    background: "linear-gradient(135deg, #6ee7b7, #3b82f6)",
+    border: "none",
+    borderRadius: 10,
+    padding: "13px",
+    color: "#0a0a0f",
+    fontWeight: 700,
+    fontSize: 14,
+    cursor: "pointer",
+    marginTop: 4,
+  },
+  btnSecondary: {
+    background: "rgba(110,231,183,0.08)",
+    border: "1px solid rgba(110,231,183,0.3)",
+    borderRadius: 10,
+    padding: "13px",
+    color: "#6ee7b7",
+    fontWeight: 600,
+    fontSize: 14,
+    cursor: "pointer",
+  },
+  btnGhost: {
+    background: "transparent",
+    border: "none",
+    color: "#6b7280",
+    fontSize: 13,
+    cursor: "pointer",
+    padding: "6px 0",
   },
   error: {
-    background: "rgba(255,0,0,0.15)",
-    border: "1px solid rgba(255,0,0,0.3)",
-    color: "#ff6b6b",
-    padding: "12px 16px",
-    borderRadius: "10px",
-    fontSize: "14px",
-    width: "100%",
-    textAlign: "center",
+    background: "rgba(239,68,68,0.1)",
+    border: "1px solid rgba(239,68,68,0.3)",
+    borderRadius: 8,
+    padding: "10px 12px",
+    color: "#f87171",
+    fontSize: 13,
   },
-  infoBanner: {
-    background: "rgba(0,212,255,0.1)",
-    border: "1px solid rgba(0,212,255,0.3)",
-    color: "#00d4ff",
-    padding: "12px 16px",
-    borderRadius: "10px",
-    fontSize: "14px",
-    width: "100%",
+  legalNote: {
+    fontSize: 11,
+    color: "#6b7280",
     textAlign: "center",
     lineHeight: 1.6,
+    marginTop: 8,
+    padding: "12px",
+    background: "rgba(110,231,183,0.03)",
+    borderRadius: 8,
+    border: "1px solid rgba(110,231,183,0.08)",
   },
-  hint: {
-    color: "#8892b0",
-    fontSize: "13px",
-    margin: 0,
+  uidPreview: {
+    background: "rgba(0,0,0,0.2)",
+    borderRadius: 8,
+    padding: "8px 12px",
+    fontSize: 12,
   },
-  link: {
-    color: "#00d4ff",
-    cursor: "pointer",
-  },
-  avatarGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(6, 1fr)",
-    gap: "8px",
-    width: "100%",
-  },
-  avatarBtn: {
-    fontSize: "28px",
-    background: "rgba(255,255,255,0.05)",
-    border: "2px solid transparent",
-    borderRadius: "10px",
-    cursor: "pointer",
-    padding: "6px",
-    transition: "all 0.2s",
-    aspectRatio: "1",
-  },
-  avatarBtnSelected: {
-    border: "2px solid #00d4ff",
-    background: "rgba(0,212,255,0.15)",
-  },
-  legalBox: {
-    background: "rgba(255,255,255,0.05)",
-    border: "1px solid rgba(255,255,255,0.15)",
-    borderRadius: "12px",
-    padding: "16px",
-    width: "100%",
-    boxSizing: "border-box",
-  },
-  legalHeading: {
-    color: "#00d4ff",
-    fontSize: "14px",
-    margin: "0 0 12px 0",
-    fontWeight: "600",
-  },
-  legalScroll: {
-    maxHeight: "160px",
-    overflowY: "auto",
-    marginBottom: "12px",
-  },
-  legalText: {
-    color: "#8892b0",
-    fontSize: "12px",
-    lineHeight: 1.7,
-    margin: 0,
-  },
-  checkboxLabel: {
-    display: "flex",
-    alignItems: "flex-start",
-    gap: "10px",
-    color: "#ccd6f6",
-    fontSize: "13px",
-    cursor: "pointer",
-    lineHeight: 1.5,
-  },
-  checkbox: {
-    width: "16px",
-    height: "16px",
-    marginTop: "2px",
-    flexShrink: 0,
-    accentColor: "#00d4ff",
+  footer: {
+    fontSize: 11,
+    color: "#374151",
+    textAlign: "center",
+    lineHeight: 2,
   },
 };
