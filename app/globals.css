@@ -7,41 +7,28 @@
 html, body {
   height: 100%;
   width: 100%;
-  overflow: hidden;
-}
-
-body {
-  background: #0F0C29;
-  color: #E2E8F0;
-  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  font-family: 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  background: #f5f5f5;
+  color: #1a1a2e;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-input, select, textarea, button {
+#__next {
+  height: 100%;
+}
+
+button {
   font-family: inherit;
 }
 
-input::placeholder {
-  color: #4A5568;
-}
-
-input:focus, select:focus {
-  border-color: rgba(167, 139, 250, 0.6) !important;
-  box-shadow: 0 0 0 3px rgba(167, 139, 250, 0.15);
-}
-
-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-button:not(:disabled):hover {
-  opacity: 0.9;
+input, textarea {
+  font-family: inherit;
 }
 
 ::-webkit-scrollbar {
   width: 6px;
+  height: 6px;
 }
 
 ::-webkit-scrollbar-track {
@@ -49,15 +36,21 @@ button:not(:disabled):hover {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(255,255,255,0.1);
+  background: #ddd;
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255,255,255,0.2);
+  background: #bbb;
 }
 
-select option {
-  background: #1A1A2E;
-  color: #E2E8F0;
+input:focus {
+  border-color: #6c63ff !important;
+  box-shadow: 0 0 0 3px rgba(108, 99, 255, 0.12);
+}
+
+@media (max-width: 700px) {
+  body {
+    font-size: 14px;
+  }
 }

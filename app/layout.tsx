@@ -2,10 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Confi — Confidential Messaging",
+  title: "Confi — Secure Messaging with NDA Protection",
   description:
-    "Secure, identity-verified messaging with international NDA protection. Every conversation is auditable.",
-  icons: { icon: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔐</text></svg>" },
+    "End-to-end encrypted messaging with legally-binding NDA activation, government ID verification, and internationally attributable digital signatures.",
 };
 
 export default function RootLayout({
