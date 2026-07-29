@@ -1,0 +1,614 @@
+/* ── Layout wrappers ────────────────────────────────────────────────────── */
+.centerWrap {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #0a0a0a 0%, #1a1a2e 50%, #16213e 100%);
+  padding: 20px;
+}
+
+.card {
+  background: #1c1c2e;
+  border: 1px solid #2a2a4a;
+  border-radius: 20px;
+  padding: 40px 36px;
+  width: 100%;
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+.appShell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: #0e0e1a;
+  color: #e0e0e0;
+  max-width: 480px;
+  margin: 0 auto;
+  position: relative;
+}
+
+/* ── Typography ─────────────────────────────────────────────────────────── */
+.logo {
+  font-size: 52px;
+  text-align: center;
+  margin-bottom: 4px;
+}
+
+.appName {
+  font-size: 36px;
+  font-weight: 800;
+  text-align: center;
+  color: #a78bfa;
+  margin: 0;
+  letter-spacing: -1px;
+}
+
+.tagline {
+  text-align: center;
+  color: #9ca3af;
+  font-size: 15px;
+  margin: 4px 0 12px;
+  line-height: 1.5;
+}
+
+.cardTitle {
+  font-size: 22px;
+  font-weight: 700;
+  color: #f0f0f0;
+  margin: 0;
+  text-align: center;
+}
+
+.cardSubtitle {
+  font-size: 14px;
+  color: #9ca3af;
+  text-align: center;
+  line-height: 1.5;
+  margin: 0;
+}
+
+/* ── Feature list ───────────────────────────────────────────────────────── */
+.featureList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.feature {
+  font-size: 14px;
+  color: #c4b5fd;
+  background: rgba(167, 139, 250, 0.08);
+  border: 1px solid rgba(167, 139, 250, 0.15);
+  border-radius: 10px;
+  padding: 10px 14px;
+}
+
+/* ── Buttons ─────────────────────────────────────────────────────────────── */
+.btnPrimary {
+  background: linear-gradient(135deg, #7c3aed, #a78bfa);
+  color: #fff;
+  border: none;
+  border-radius: 12px;
+  padding: 14px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.2s, transform 0.1s;
+  margin-top: 4px;
+}
+
+.btnPrimary:hover:not(:disabled) {
+  opacity: 0.9;
+  transform: translateY(-1px);
+}
+
+.btnPrimary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btnGhost {
+  background: transparent;
+  color: #a78bfa;
+  border: 1px solid #a78bfa;
+  border-radius: 12px;
+  padding: 12px;
+  font-size: 15px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.btnGhost:hover:not(:disabled) {
+  background: rgba(167, 139, 250, 0.1);
+}
+
+.btnGhost:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btnDanger {
+  background: transparent;
+  color: #f87171;
+  border: 1px solid #f87171;
+  border-radius: 12px;
+  padding: 12px 20px;
+  font-size: 15px;
+  cursor: pointer;
+  width: 100%;
+  transition: background 0.2s;
+}
+
+.btnDanger:hover {
+  background: rgba(248, 113, 113, 0.1);
+}
+
+.back {
+  background: none;
+  border: none;
+  color: #a78bfa;
+  font-size: 15px;
+  cursor: pointer;
+  padding: 0;
+  margin-bottom: 4px;
+  align-self: flex-start;
+}
+
+.iconBtn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ── Phone input row ─────────────────────────────────────────────────────── */
+.phoneRow {
+  display: flex;
+  gap: 8px;
+}
+
+.countrySelect {
+  background: #2a2a3e;
+  border: 1px solid #3a3a5c;
+  border-radius: 10px;
+  color: #e0e0e0;
+  font-size: 14px;
+  padding: 10px 8px;
+  width: 90px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.phoneInput {
+  flex: 1;
+  background: #2a2a3e;
+  border: 1px solid #3a3a5c;
+  border-radius: 10px;
+  color: #e0e0e0;
+  font-size: 16px;
+  padding: 10px 14px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.phoneInput:focus {
+  border-color: #a78bfa;
+}
+
+/* ── OTP row ─────────────────────────────────────────────────────────────── */
+.otpRow {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  margin: 8px 0;
+}
+
+.otpBox {
+  width: 48px;
+  height: 56px;
+  background: #2a2a3e;
+  border: 2px solid #3a3a5c;
+  border-radius: 12px;
+  color: #f0f0f0;
+  font-size: 24px;
+  font-weight: 700;
+  text-align: center;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.otpBox:focus {
+  border-color: #a78bfa;
+}
+
+/* ── Form fields ─────────────────────────────────────────────────────────── */
+.fieldLabel {
+  font-size: 13px;
+  font-weight: 600;
+  color: #c4b5fd;
+  margin-bottom: 2px;
+}
+
+.textInput {
+  background: #2a2a3e;
+  border: 1px solid #3a3a5c;
+  border-radius: 10px;
+  color: #e0e0e0;
+  font-size: 15px;
+  padding: 11px 14px;
+  outline: none;
+  transition: border-color 0.2s;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.textInput:focus {
+  border-color: #a78bfa;
+}
+
+.hint {
+  font-size: 12px;
+  color: #6b7280;
+  margin: -4px 0 4px;
+}
+
+.error {
+  color: #f87171;
+  font-size: 13px;
+  text-align: center;
+  margin: 0;
+}
+
+.success {
+  color: #34d399;
+  font-size: 13px;
+  text-align: center;
+  margin: 0;
+}
+
+.legal {
+  font-size: 12px;
+  color: #4b5563;
+  text-align: center;
+  margin-top: 4px;
+}
+
+/* ── Photo upload ─────────────────────────────────────────────────────────── */
+.photoUploadWrap {
+  display: flex;
+  justify-content: center;
+}
+
+.photoUploadLabel {
+  cursor: pointer;
+  display: block;
+}
+
+.photoPreview {
+  width: 100px;
+  height: 100px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 3px solid #a78bfa;
+  display: block;
+}
+
+.photoPlaceholder {
+  width: 100px;
+  height: 100px;
+  border-radius: 50%;
+  background: #2a2a3e;
+  border: 2px dashed #4a4a6a;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.2s;
+}
+
+.photoPlaceholder:hover {
+  border-color: #a78bfa;
+}
+
+/* ── Top bar ──────────────────────────────────────────────────────────────── */
+.topBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  background: #12121e;
+  border-bottom: 1px solid #2a2a3e;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.topBarLeft {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.topBarRight {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.topBarLogo {
+  font-size: 18px;
+  font-weight: 700;
+  color: #a78bfa;
+}
+
+/* ── Avatars ──────────────────────────────────────────────────────────────── */
+.avatarSmall {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 2px solid #a78bfa;
+}
+
+.avatarDefault {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #7c3aed, #a78bfa);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  font-weight: 700;
+  color: #fff;
+}
+
+.avatarLarge {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 3px solid #a78bfa;
+}
+
+.avatarDefaultLarge {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #7c3aed, #a78bfa);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 32px;
+  font-weight: 700;
+  color: #fff;
+}
+
+/* ── Identity card ────────────────────────────────────────────────────────── */
+.identityCard {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 24px 20px;
+  background: #1a1a2e;
+  border-bottom: 1px solid #2a2a3e;
+}
+
+.identityAvatar {
+  flex-shrink: 0;
+}
+
+.identityInfo {
+  flex: 1;
+  min-width: 0;
+}
+
+.identityName {
+  font-size: 20px;
+  font-weight: 700;
+  color: #f0f0f0;
+  margin: 0 0 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.identityHandle {
+  font-size: 14px;
+  color: #a78bfa;
+  margin: 0 0 2px;
+}
+
+.identityPhone {
+  font-size: 13px;
+  color: #6b7280;
+  margin: 0 0 8px;
+}
+
+.verifiedBadge {
+  display: inline-block;
+  font-size: 12px;
+  background: rgba(52, 211, 153, 0.1);
+  color: #34d399;
+  border: 1px solid rgba(52, 211, 153, 0.3);
+  border-radius: 20px;
+  padding: 3px 10px;
+}
+
+/* ── NDA panel ────────────────────────────────────────────────────────────── */
+.ndaPanel {
+  margin: 16px;
+  background: rgba(167, 139, 250, 0.06);
+  border: 1px solid rgba(167, 139, 250, 0.2);
+  border-radius: 16px;
+  padding: 18px;
+}
+
+.ndaPanelHeader {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.ndaPanelHeader h3 {
+  margin: 0;
+  font-size: 16px;
+  color: #c4b5fd;
+}
+
+.ndaDesc {
+  font-size: 14px;
+  color: #9ca3af;
+  line-height: 1.6;
+  margin: 0 0 12px;
+}
+
+.ndaStatus {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #34d399;
+}
+
+.ndaDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #34d399;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ── Chat list placeholder ────────────────────────────────────────────────── */
+.chatListPlaceholder {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.emptyState {
+  text-align: center;
+  color: #4b5563;
+}
+
+.emptyState h3 {
+  color: #6b7280;
+  margin: 12px 0 8px;
+}
+
+.emptyState p {
+  font-size: 14px;
+  margin: 0;
+}
+
+/* ── Bottom nav ───────────────────────────────────────────────────────────── */
+.bottomNav {
+  display: flex;
+  border-top: 1px solid #2a2a3e;
+  background: #12121e;
+  padding: 8px 0;
+  position: sticky;
+  bottom: 0;
+}
+
+.navBtn {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  background: none;
+  border: none;
+  color: #6b7280;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 8px;
+  transition: color 0.2s;
+}
+
+.navBtn span:first-child {
+  font-size: 20px;
+}
+
+.navBtnActive {
+  color: #a78bfa;
+}
+
+/* ── Settings body ────────────────────────────────────────────────────────── */
+.settingsBody {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.settingsSection {
+  background: #1a1a2e;
+  border: 1px solid #2a2a3e;
+  border-radius: 14px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settingsSectionTitle {
+  font-size: 12px;
+  font-weight: 600;
+  color: #a78bfa;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 4px;
+}
+
+.settingsRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 0;
+  border-bottom: 1px solid #2a2a3e;
+}
+
+.settingsRow:last-child {
+  border-bottom: none;
+}
+
+.settingsLabel {
+  font-size: 14px;
+  color: #9ca3af;
+}
+
+.settingsValue {
+  font-size: 14px;
+  color: #e0e0e0;
+}
+
+/* ── Dev note ─────────────────────────────────────────────────────────────── */
+.devNote {
+  font-size: 12px;
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.2);
+  border-radius: 8px;
+  padding: 10px 12px;
+  text-align: center;
+}

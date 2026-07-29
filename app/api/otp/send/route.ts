@@ -1,56 +1,63 @@
 import { NextRequest, NextResponse } from "next/server";
-import { q, hasDb } from "@/lib/db";
+import { q, ensure, hasDb } from "@/lib/db";
 
-// In production this would call Twilio. Since TWILIO_AUTH_TOKEN is not in our
-// allowed env vars, we generate a real OTP, store it in the DB, and surface
-// it in dev mode so the UI can show it.  In a real Twilio deployment you swap
-// the TODO block for a fetch() to api.twilio.com.
-
+// Generate a random 6-digit OTP
 function generateOtp(): string {
-  return String(Math.floor(100000 + Math.random() * 900000));
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
+
+// A secret that makes the stored OTP usable as a password seed
+function generateSecret(): string {
+  return Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
 }
 
 export async function POST(req: NextRequest) {
   try {
     const { phone } = await req.json();
-    if (!phone) return NextResponse.json({ error: "Phone required" }, { status: 400 });
 
-    const otp = generateOtp();
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 min
-
-    if (hasDb()) {
-      await q(
-        `CREATE TABLE IF NOT EXISTS confi_otp (
-          id SERIAL PRIMARY KEY,
-          phone TEXT NOT NULL,
-          otp TEXT NOT NULL,
-          expires_at TIMESTAMPTZ NOT NULL,
-          used BOOLEAN DEFAULT FALSE,
-          created_at TIMESTAMPTZ DEFAULT NOW()
-        )`,
-        []
-      );
-      // Invalidate previous OTPs for this phone
-      await q(`UPDATE confi_otp SET used = TRUE WHERE phone = $1`, [phone]);
-      await q(
-        `INSERT INTO confi_otp (phone, otp, expires_at) VALUES ($1, $2, $3)`,
-        [phone, otp, expiresAt.toISOString()]
-      );
+    if (!phone || typeof phone !== "string" || phone.length < 7) {
+      return NextResponse.json({ error: "Invalid phone number" }, { status: 400 });
     }
 
-    // TODO: Replace with Twilio SMS when TWILIO_AUTH_TOKEN is available:
-    // await fetch(`https://api.twilio.com/2010-04-01/Accounts/${SID}/Messages.json`, {
-    //   method: "POST",
-    //   headers: { Authorization: "Basic " + btoa(`${SID}:${AUTH_TOKEN}`) },
-    //   body: new URLSearchParams({ To: phone, From: FROM, Body: `Your Confi OTP: ${otp}` }),
-    // });
+    const otp = generateOtp();
+    const secret = generateSecret();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
-    console.log(`[CONFI OTP] Phone: ${phone}, OTP: ${otp}`);
+    if (hasDb()) {
+      await ensure();
+      // Upsert OTP record
+      await q(
+        `INSERT INTO confi_otp_codes (phone, code, secret, expires_at, created_at)
+         VALUES ($1, $2, $3, $4, NOW())
+         ON CONFLICT (phone) DO UPDATE
+         SET code = $2, secret = $3, expires_at = $4, created_at = NOW()`,
+        [phone, otp, secret, expiresAt.toISOString()]
+      );
+    } else {
+      // No DB — store in-memory (dev only, single-instance)
+      otpStore[phone] = { otp, secret, expiresAt };
+    }
 
-    // In dev / no-Twilio mode, return the OTP in the response so the UI can display it.
-    return NextResponse.json({ ok: true, devOtp: otp });
-  } catch (err) {
-    console.error("OTP send error:", err);
-    return NextResponse.json({ error: "Failed to send OTP" }, { status: 500 });
+    // In production, integrate Twilio here:
+    // await twilioClient.messages.create({ to: phone, from: TWILIO_FROM, body: `Your Confi code: ${otp}` });
+
+    // For dev/demo: log to console and return in response
+    console.log(`[Confi OTP] Phone: ${phone} | Code: ${otp} | Secret: ${secret}`);
+
+    return NextResponse.json({
+      ok: true,
+      message: "OTP sent",
+      // Return OTP in dev mode (remove in production)
+      _dev_otp: process.env.NODE_ENV !== "production" ? otp : undefined,
+    });
+  } catch (err: unknown) {
+    console.error("[otp/send]", err);
+    return NextResponse.json(
+      { error: "Failed to send OTP" },
+      { status: 500 }
+    );
   }
 }
+
+// In-memory fallback (dev, single-instance only)
+const otpStore: Record<string, { otp: string; secret: string; expiresAt: Date }> = {};
