@@ -1,95 +1,76 @@
-*,
-*::before,
-*::after {
+*, *::before, *::after {
   box-sizing: border-box;
   margin: 0;
   padding: 0;
 }
 
-html,
-body {
-  height: 100%;
+html, body {
   width: 100%;
+  height: 100%;
   overflow: hidden;
-}
-
-body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  background: #f0f2f5;
-  color: #1a1a2e;
+  background: #0a0a0f;
+  color: #e8e8f0;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
-#__next,
-main {
-  height: 100%;
+#__next {
+  width: 100%;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
 }
 
-/* Scrollbar styling */
 ::-webkit-scrollbar {
   width: 4px;
 }
-
 ::-webkit-scrollbar-track {
   background: transparent;
 }
-
 ::-webkit-scrollbar-thumb {
-  background: #ddd;
+  background: rgba(124, 106, 247, 0.3);
   border-radius: 2px;
 }
-
 ::-webkit-scrollbar-thumb:hover {
-  background: #bbb;
+  background: rgba(124, 106, 247, 0.5);
 }
 
-/* Animations */
-@keyframes slide {
-  0% { transform: translateX(-100%); }
-  50% { transform: translateX(250%); }
-  100% { transform: translateX(-100%); }
+input::placeholder {
+  color: #444;
 }
 
-@keyframes pulse {
-  0%, 100% { transform: scale(1); opacity: 1; }
-  50% { transform: scale(1.1); opacity: 0.8; }
+input[type="text"],
+input[type="email"],
+input[type="password"],
+input[type="tel"] {
+  -webkit-appearance: none;
+  appearance: none;
 }
 
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
+input:focus, textarea:focus {
+  border-color: rgba(124, 106, 247, 0.5) !important;
+  box-shadow: 0 0 0 3px rgba(124, 106, 247, 0.1);
 }
 
-@keyframes spin {
-  to { transform: rotate(360deg); }
+button:hover {
+  opacity: 0.88;
 }
 
-/* Input focus styles */
-input:focus,
-select:focus,
-textarea:focus {
-  outline: none;
-  border-color: #6c63ff !important;
-  box-shadow: 0 0 0 3px rgba(108, 99, 255, 0.12);
-}
-
-/* Button active states */
 button:active {
   transform: scale(0.98);
 }
 
-/* Message animation */
-.message-enter {
-  animation: fadeIn 0.2s ease-out;
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
-/* Confidential mode glow */
-.confidential-glow {
-  box-shadow: 0 0 20px rgba(108, 99, 255, 0.4);
+.fade-in {
+  animation: fadeIn 0.25s ease forwards;
 }
 
-/* Selection color */
-::selection {
-  background: rgba(108, 99, 255, 0.2);
-  color: #1a1a2e;
+@media (max-width: 768px) {
+  html, body {
+    overflow: hidden;
+  }
 }
