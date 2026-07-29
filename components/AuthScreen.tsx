@@ -1,478 +1,489 @@
 "use client";
 
 import { useState } from "react";
-import type { AppUser } from "@/app/page";
+import { Session, saveSession } from "@/lib/session";
+import { generateOTP, storeOTP, verifyOTP } from "@/lib/otp";
+import { hashPassword, verifyPassword } from "@/lib/crypto";
+import { COUNTRY_CODES } from "@/lib/countryCodes";
 
-type Props = {
-  onSuccess: (user: AppUser) => void;
-};
+type Mode = "login" | "signup";
+type Step = "credentials" | "otp" | "done";
 
-type AuthMode = "phone" | "email";
-type Step = "input" | "otp" | "password";
+interface Props {
+  onSuccess: (session: Session) => void;
+}
 
 export default function AuthScreen({ onSuccess }: Props) {
-  const [mode, setMode] = useState<AuthMode>("phone");
-  const [step, setStep] = useState<Step>("input");
-  const [isLogin, setIsLogin] = useState(false);
-
+  const [mode, setMode] = useState<Mode>("signup");
+  const [step, setStep] = useState<Step>("credentials");
+  const [countryCode, setCountryCode] = useState("+1");
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [otp, setOtp] = useState("");
-  const [generatedOtp, setGeneratedOtp] = useState("");
-  const [otpDisplay, setOtpDisplay] = useState("");
-
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [otpInput, setOtpInput] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [otpSent, setOtpSent] = useState(false);
+  const [otpSentTo, setOtpSentTo] = useState("");
 
-  const generateOTP = () => {
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
-    return code;
+  const fullPhone = `${countryCode}${phone.replace(/\D/g, "")}`;
+
+  const validateCredentials = (): string | null => {
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return "Please enter a valid email address.";
+    }
+    if (!phone || phone.replace(/\D/g, "").length < 7) {
+      return "Please enter a valid phone number.";
+    }
+    if (password.length < 8) {
+      return "Password must be at least 8 characters.";
+    }
+    if (mode === "signup" && password !== confirmPassword) {
+      return "Passwords do not match.";
+    }
+    return null;
   };
 
   const handleSendOTP = async () => {
-    if (!phone || phone.length < 7) {
-      setError("Enter a valid phone number");
+    setError("");
+    const validationError = validateCredentials();
+    if (validationError) {
+      setError(validationError);
       return;
     }
-    setError("");
     setLoading(true);
-    await new Promise((r) => setTimeout(r, 800));
-    const code = generateOTP();
-    setGeneratedOtp(code);
-    setOtpDisplay(code);
-    setOtpSent(true);
-    setStep("otp");
-    setLoading(false);
+    try {
+      const otp = generateOTP();
+      storeOTP(fullPhone, otp);
+      // In production this calls your SMS gateway; here we log to console
+      console.log(`[CONFI OTP] Code for ${fullPhone}: ${otp}`);
+      setOtpSentTo(fullPhone);
+      setStep("otp");
+    } catch {
+      setError("Failed to send OTP. Please try again.");
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleVerifyOTP = async () => {
-    if (otp !== generatedOtp) {
-      setError("Invalid OTP. Please try again.");
+    setError("");
+    if (otpInput.length !== 6) {
+      setError("Please enter the 6-digit code.");
       return;
     }
-    setError("");
+    const valid = verifyOTP(fullPhone, otpInput);
+    if (!valid) {
+      setError("Invalid or expired OTP. Please try again.");
+      return;
+    }
     setLoading(true);
-    // Use email auth API with phone as pseudo-email
-    const pseudoEmail = `${phone.replace(/\D/g, "")}@phone.confi.app`;
-    const res = await fetch("/api/auth", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        mode: isLogin ? "login" : "signup",
-        email: pseudoEmail,
-        password: generatedOtp,
-      }),
-    });
-    const data = await res.json();
-    setLoading(false);
-    if (!res.ok || data.error) {
-      if (data.error?.includes("already") && !isLogin) {
-        // Try login instead
-        const res2 = await fetch("/api/auth", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            mode: "login",
-            email: pseudoEmail,
-            password: generatedOtp,
-          }),
-        });
-        const data2 = await res2.json();
-        if (data2.error) {
-          setError("Account exists. Use login or try a different number.");
-          return;
-        }
-        finishAuth(data2.email, phone, undefined, data2.sessionToken || generateSessionToken());
+    try {
+      const hashed = await hashPassword(password);
+      const payload =
+        mode === "signup"
+          ? { mode: "signup", email, password: hashed, phone: fullPhone }
+          : { mode: "login", email, password };
+
+      const res = await fetch("/api/auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+
+      if (!res.ok || data.error) {
+        setError(data.error || "Authentication failed.");
+        setLoading(false);
         return;
       }
-      setError(data.error || "Auth failed");
-      return;
+
+      const session: Session = {
+        email: data.email,
+        phone: fullPhone,
+        token: data.token || btoa(`${data.email}:${Date.now()}`),
+        issuedAt: Date.now(),
+        expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000,
+      };
+      saveSession(session);
+      onSuccess(session);
+    } catch {
+      setError("Something went wrong. Please try again.");
+    } finally {
+      setLoading(false);
     }
-    finishAuth(data.email, phone, undefined, data.sessionToken || generateSessionToken());
   };
 
-  const handleEmailAuth = async () => {
-    if (!email || !email.includes("@")) {
-      setError("Enter a valid email address");
-      return;
-    }
-    if (!password || password.length < 6) {
-      setError("Password must be at least 6 characters");
-      return;
-    }
+  const handleLoginDirect = async () => {
     setError("");
-    setLoading(true);
-    const res = await fetch("/api/auth", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: isLogin ? "login" : "signup", email, password }),
-    });
-    const data = await res.json();
-    setLoading(false);
-    if (!res.ok || data.error) {
-      setError(data.error || "Authentication failed");
+    const validationError = validateCredentials();
+    if (validationError) {
+      setError(validationError);
       return;
     }
-    finishAuth(data.email, undefined, email, data.sessionToken || generateSessionToken());
-  };
-
-  const generateSessionToken = () => {
-    return btoa(`${Date.now()}-${Math.random()}`).replace(/[^a-zA-Z0-9]/g, "").slice(0, 32);
-  };
-
-  const finishAuth = (
-    apiEmail: string,
-    phoneVal?: string,
-    emailVal?: string,
-    token?: string
-  ) => {
-    // Try to get existing profile from localStorage
-    const existing = localStorage.getItem("confi_profile");
-    let profile: { displayName?: string; avatarUrl?: string; isVerified?: boolean } = {};
-    if (existing) {
-      try { profile = JSON.parse(existing); } catch { /* empty */ }
+    setLoading(true);
+    try {
+      const res = await fetch("/api/auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "login", email, password }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        setError(data.error || "Login failed. Check your credentials.");
+        setLoading(false);
+        return;
+      }
+      const session: Session = {
+        email: data.email,
+        phone: fullPhone || data.phone || "",
+        token: data.token || btoa(`${data.email}:${Date.now()}`),
+        issuedAt: Date.now(),
+        expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000,
+      };
+      saveSession(session);
+      onSuccess(session);
+    } catch {
+      setError("Something went wrong. Please try again.");
+    } finally {
+      setLoading(false);
     }
-    const user: AppUser = {
-      id: Date.now(),
-      email: apiEmail,
-      phone: phoneVal,
-      displayName: profile.displayName,
-      avatarUrl: profile.avatarUrl,
-      isVerified: profile.isVerified || false,
-      sessionToken: token || generateSessionToken(),
-    };
-    onSuccess(user);
   };
 
   return (
-    <div style={styles.container}>
-      <div style={styles.card}>
-        {/* Logo */}
-        <div style={styles.logoArea}>
-          <div style={styles.logo}>
-            <span style={styles.logoIcon}>🔐</span>
+    <div style={styles.card}>
+      {/* Header */}
+      <div style={styles.header}>
+        <div style={styles.logo}>🔐</div>
+        <h1 style={styles.title}>Confi</h1>
+        <p style={styles.subtitle}>Secure. Confidential. Trusted.</p>
+      </div>
+
+      {/* Mode toggle */}
+      <div style={styles.modeToggle}>
+        <button
+          style={{ ...styles.modeBtn, ...(mode === "signup" ? styles.modeBtnActive : {}) }}
+          onClick={() => { setMode("signup"); setStep("credentials"); setError(""); }}
+        >
+          Sign Up
+        </button>
+        <button
+          style={{ ...styles.modeBtn, ...(mode === "login" ? styles.modeBtnActive : {}) }}
+          onClick={() => { setMode("login"); setStep("credentials"); setError(""); }}
+        >
+          Log In
+        </button>
+      </div>
+
+      {/* Step: Credentials */}
+      {step === "credentials" && (
+        <div style={styles.form}>
+          <label style={styles.label}>Email Address</label>
+          <input
+            style={styles.input}
+            type="email"
+            placeholder="you@example.com"
+            value={email}
+            onChange={e => setEmail(e.target.value)}
+            autoComplete="email"
+          />
+
+          <label style={styles.label}>Phone Number</label>
+          <div style={styles.phoneRow}>
+            <select
+              style={styles.countrySelect}
+              value={countryCode}
+              onChange={e => setCountryCode(e.target.value)}
+            >
+              {COUNTRY_CODES.map(c => (
+                <option key={c.code + c.dial} value={c.dial}>
+                  {c.flag} {c.dial}
+                </option>
+              ))}
+            </select>
+            <input
+              style={{ ...styles.input, flex: 1, marginBottom: 0 }}
+              type="tel"
+              placeholder="555 000 1234"
+              value={phone}
+              onChange={e => setPhone(e.target.value)}
+              autoComplete="tel"
+            />
           </div>
-          <h1 style={styles.appName}>Confi</h1>
-          <p style={styles.tagline}>Confidential Messaging, Legally Protected</p>
-        </div>
 
-        {/* Mode toggle */}
-        <div style={styles.modeTabs}>
-          <button
-            style={{ ...styles.modeTab, ...(mode === "phone" ? styles.modeTabActive : {}) }}
-            onClick={() => { setMode("phone"); setStep("input"); setError(""); }}
-          >
-            📱 Phone
-          </button>
-          <button
-            style={{ ...styles.modeTab, ...(mode === "email" ? styles.modeTabActive : {}) }}
-            onClick={() => { setMode("email"); setStep("input"); setError(""); }}
-          >
-            ✉️ Email
-          </button>
-        </div>
+          <label style={styles.label}>Password</label>
+          <input
+            style={styles.input}
+            type="password"
+            placeholder="Minimum 8 characters"
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            autoComplete={mode === "signup" ? "new-password" : "current-password"}
+          />
 
-        {/* Auth type toggle */}
-        <div style={styles.authToggle}>
-          <button
-            style={{ ...styles.authToggleBtn, ...(!isLogin ? styles.authToggleBtnActive : {}) }}
-            onClick={() => { setIsLogin(false); setStep("input"); setError(""); }}
-          >
-            Sign Up
-          </button>
-          <button
-            style={{ ...styles.authToggleBtn, ...(isLogin ? styles.authToggleBtnActive : {}) }}
-            onClick={() => { setIsLogin(true); setStep("input"); setError(""); }}
-          >
-            Log In
-          </button>
-        </div>
-
-        {/* Phone flow */}
-        {mode === "phone" && step === "input" && (
-          <div style={styles.form}>
-            <label style={styles.label}>Phone Number</label>
-            <div style={styles.phoneRow}>
-              <span style={styles.phoneFlag}>🌍</span>
+          {mode === "signup" && (
+            <>
+              <label style={styles.label}>Confirm Password</label>
               <input
                 style={styles.input}
-                type="tel"
-                placeholder="+1 555 000 0000"
-                value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleSendOTP()}
+                type="password"
+                placeholder="Re-enter password"
+                value={confirmPassword}
+                onChange={e => setConfirmPassword(e.target.value)}
+                autoComplete="new-password"
               />
-            </div>
-            <button style={styles.btn} onClick={handleSendOTP} disabled={loading}>
-              {loading ? "Sending..." : "Send OTP"}
+            </>
+          )}
+
+          {error && <p style={styles.error}>{error}</p>}
+
+          {mode === "signup" ? (
+            <button style={styles.primaryBtn} onClick={handleSendOTP} disabled={loading}>
+              {loading ? "Sending..." : "Send Verification Code"}
             </button>
+          ) : (
+            <>
+              <button style={styles.primaryBtn} onClick={handleLoginDirect} disabled={loading}>
+                {loading ? "Logging in..." : "Log In"}
+              </button>
+              <button
+                style={styles.secondaryBtn}
+                onClick={handleSendOTP}
+                disabled={loading}
+              >
+                Log in with OTP instead
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Step: OTP */}
+      {step === "otp" && (
+        <div style={styles.form}>
+          <div style={styles.otpInfo}>
+            <span style={styles.otpIcon}>📱</span>
+            <p style={styles.otpText}>
+              A 6-digit code was sent to{" "}
+              <strong style={{ color: "#a78bfa" }}>{otpSentTo}</strong>
+            </p>
+            <p style={styles.otpHint}>(Check browser console for demo code)</p>
           </div>
-        )}
 
-        {mode === "phone" && step === "otp" && (
-          <div style={styles.form}>
-            <div style={styles.otpInfo}>
-              <p style={styles.otpInfoText}>OTP sent to {phone}</p>
-              {otpDisplay && (
-                <div style={styles.otpDemo}>
-                  <span style={styles.otpDemoLabel}>Demo OTP (production uses SMS):</span>
-                  <span style={styles.otpDemoCode}>{otpDisplay}</span>
-                </div>
-              )}
-            </div>
-            <label style={styles.label}>Enter 6-digit OTP</label>
-            <input
-              style={{ ...styles.input, textAlign: "center", fontSize: "24px", letterSpacing: "8px" }}
-              type="text"
-              maxLength={6}
-              placeholder="000000"
-              value={otp}
-              onChange={(e) => setOtp(e.target.value.replace(/\D/g, ""))}
-              onKeyDown={(e) => e.key === "Enter" && handleVerifyOTP()}
-            />
-            <button style={styles.btn} onClick={handleVerifyOTP} disabled={loading}>
-              {loading ? "Verifying..." : "Verify OTP"}
-            </button>
-            <button
-              style={styles.linkBtn}
-              onClick={() => { setStep("input"); setOtp(""); setError(""); }}
-            >
-              ← Change number
-            </button>
-          </div>
-        )}
+          <label style={styles.label}>Verification Code</label>
+          <input
+            style={{ ...styles.input, textAlign: "center", fontSize: "28px", letterSpacing: "12px", fontWeight: 700 }}
+            type="text"
+            inputMode="numeric"
+            maxLength={6}
+            placeholder="000000"
+            value={otpInput}
+            onChange={e => setOtpInput(e.target.value.replace(/\D/g, "").slice(0, 6))}
+          />
 
-        {/* Email flow */}
-        {mode === "email" && (
-          <div style={styles.form}>
-            <label style={styles.label}>Email Address</label>
-            <input
-              style={styles.input}
-              type="email"
-              placeholder="you@example.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-            />
-            <label style={styles.label}>Password</label>
-            <input
-              style={styles.input}
-              type="password"
-              placeholder="Min. 6 characters"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleEmailAuth()}
-            />
-            <button style={styles.btn} onClick={handleEmailAuth} disabled={loading}>
-              {loading ? "Please wait..." : isLogin ? "Log In" : "Create Account"}
-            </button>
-          </div>
-        )}
+          {error && <p style={styles.error}>{error}</p>}
 
-        {error && <div style={styles.error}>{error}</div>}
+          <button style={styles.primaryBtn} onClick={handleVerifyOTP} disabled={loading}>
+            {loading ? "Verifying..." : "Verify & Continue"}
+          </button>
+          <button
+            style={styles.secondaryBtn}
+            onClick={() => { setStep("credentials"); setOtpInput(""); setError(""); }}
+          >
+            ← Back
+          </button>
+          <button
+            style={styles.ghostBtn}
+            onClick={() => {
+              const otp = generateOTP();
+              storeOTP(fullPhone, otp);
+              console.log(`[CONFI OTP] Resent code for ${fullPhone}: ${otp}`);
+            }}
+          >
+            Resend Code
+          </button>
+        </div>
+      )}
 
-        <p style={styles.terms}>
-          By continuing, you agree to Confi's{" "}
-          <span style={styles.termLink}>Terms of Service</span> and{" "}
-          <span style={styles.termLink}>Privacy Policy</span>.
-        </p>
-      </div>
+      <p style={styles.legal}>
+        By continuing, you agree to Confi&apos;s Terms of Service and Privacy Policy.
+        All data is stored with minimal PII practices.
+      </p>
     </div>
   );
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  container: {
-    width: "100%",
-    maxWidth: "420px",
-    padding: "16px",
-  },
   card: {
-    background: "rgba(255,255,255,0.05)",
+    background: "rgba(255,255,255,0.04)",
     backdropFilter: "blur(20px)",
     border: "1px solid rgba(255,255,255,0.1)",
     borderRadius: "24px",
-    padding: "40px 32px",
+    padding: "40px 36px",
+    width: "100%",
+    maxWidth: "440px",
+    margin: "20px",
     boxShadow: "0 25px 50px rgba(0,0,0,0.5)",
   },
-  logoArea: {
+  header: {
     textAlign: "center",
     marginBottom: "32px",
   },
   logo: {
-    width: "72px",
-    height: "72px",
-    background: "linear-gradient(135deg, #6366f1, #8b5cf6)",
-    borderRadius: "20px",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    margin: "0 auto 12px",
-    boxShadow: "0 8px 32px rgba(99,102,241,0.4)",
+    fontSize: "48px",
+    marginBottom: "8px",
   },
-  logoIcon: {
+  title: {
+    color: "#ffffff",
     fontSize: "32px",
-  },
-  appName: {
-    color: "#fff",
-    fontSize: "28px",
-    fontWeight: 700,
-    margin: "0 0 4px",
-  },
-  tagline: {
-    color: "#94a3b8",
-    fontSize: "13px",
+    fontWeight: 800,
     margin: 0,
+    letterSpacing: "-0.02em",
   },
-  modeTabs: {
+  subtitle: {
+    color: "#8b8fa8",
+    fontSize: "14px",
+    marginTop: "6px",
+  },
+  modeToggle: {
     display: "flex",
-    gap: "8px",
-    marginBottom: "16px",
-    background: "rgba(255,255,255,0.05)",
-    padding: "4px",
+    background: "rgba(0,0,0,0.3)",
     borderRadius: "12px",
+    padding: "4px",
+    marginBottom: "28px",
   },
-  modeTab: {
+  modeBtn: {
     flex: 1,
     padding: "10px",
     border: "none",
     borderRadius: "8px",
-    cursor: "pointer",
-    fontSize: "14px",
-    fontWeight: 500,
-    transition: "all 0.2s",
     background: "transparent",
-    color: "#94a3b8",
-  },
-  modeTabActive: {
-    background: "linear-gradient(135deg, #6366f1, #8b5cf6)",
-    color: "#fff",
-    boxShadow: "0 4px 12px rgba(99,102,241,0.4)",
-  },
-  authToggle: {
-    display: "flex",
-    gap: "8px",
-    marginBottom: "24px",
-  },
-  authToggleBtn: {
-    flex: 1,
-    padding: "8px",
-    border: "1px solid rgba(255,255,255,0.1)",
-    borderRadius: "8px",
-    cursor: "pointer",
+    color: "#8b8fa8",
     fontSize: "14px",
-    fontWeight: 500,
-    background: "transparent",
-    color: "#94a3b8",
+    fontWeight: 600,
+    cursor: "pointer",
     transition: "all 0.2s",
   },
-  authToggleBtnActive: {
-    borderColor: "#6366f1",
-    color: "#6366f1",
-    background: "rgba(99,102,241,0.1)",
+  modeBtnActive: {
+    background: "#7c3aed",
+    color: "#ffffff",
+    boxShadow: "0 2px 8px rgba(124,58,237,0.4)",
   },
   form: {
     display: "flex",
     flexDirection: "column",
-    gap: "12px",
+    gap: "0px",
   },
   label: {
-    color: "#94a3b8",
-    fontSize: "13px",
-    fontWeight: 500,
-    marginBottom: "2px",
+    color: "#a0a3b1",
+    fontSize: "12px",
+    fontWeight: 600,
+    textTransform: "uppercase",
+    letterSpacing: "0.08em",
+    marginBottom: "6px",
+    marginTop: "16px",
+  },
+  input: {
+    background: "rgba(255,255,255,0.06)",
+    border: "1px solid rgba(255,255,255,0.12)",
+    borderRadius: "10px",
+    color: "#ffffff",
+    fontSize: "15px",
+    padding: "12px 14px",
+    outline: "none",
+    width: "100%",
+    boxSizing: "border-box",
+    marginBottom: "0",
+    transition: "border-color 0.2s",
   },
   phoneRow: {
     display: "flex",
+    gap: "8px",
     alignItems: "center",
-    background: "rgba(255,255,255,0.07)",
-    border: "1px solid rgba(255,255,255,0.1)",
-    borderRadius: "10px",
-    overflow: "hidden",
   },
-  phoneFlag: {
-    padding: "0 12px",
-    fontSize: "18px",
-  },
-  input: {
-    width: "100%",
-    padding: "12px 16px",
-    background: "rgba(255,255,255,0.07)",
-    border: "1px solid rgba(255,255,255,0.1)",
+  countrySelect: {
+    background: "rgba(255,255,255,0.06)",
+    border: "1px solid rgba(255,255,255,0.12)",
     borderRadius: "10px",
-    color: "#fff",
-    fontSize: "16px",
+    color: "#ffffff",
+    fontSize: "14px",
+    padding: "12px 8px",
     outline: "none",
-    boxSizing: "border-box",
-    transition: "border-color 0.2s",
-  },
-  btn: {
-    padding: "14px",
-    background: "linear-gradient(135deg, #6366f1, #8b5cf6)",
-    border: "none",
-    borderRadius: "10px",
-    color: "#fff",
-    fontSize: "16px",
-    fontWeight: 600,
     cursor: "pointer",
-    marginTop: "4px",
-    boxShadow: "0 4px 16px rgba(99,102,241,0.4)",
+    minWidth: "80px",
+  },
+  primaryBtn: {
+    marginTop: "24px",
+    background: "linear-gradient(135deg, #7c3aed, #4f46e5)",
+    color: "#ffffff",
+    border: "none",
+    borderRadius: "12px",
+    padding: "14px",
+    fontSize: "15px",
+    fontWeight: 700,
+    cursor: "pointer",
+    boxShadow: "0 4px 15px rgba(124,58,237,0.4)",
     transition: "opacity 0.2s",
   },
-  linkBtn: {
-    background: "none",
-    border: "none",
-    color: "#6366f1",
-    cursor: "pointer",
-    fontSize: "14px",
-    padding: "4px",
-    textAlign: "center",
-  },
-  otpInfo: {
-    background: "rgba(99,102,241,0.1)",
-    border: "1px solid rgba(99,102,241,0.3)",
-    borderRadius: "10px",
+  secondaryBtn: {
+    marginTop: "10px",
+    background: "rgba(255,255,255,0.06)",
+    color: "#c4b5fd",
+    border: "1px solid rgba(124,58,237,0.3)",
+    borderRadius: "12px",
     padding: "12px",
+    fontSize: "14px",
+    fontWeight: 600,
+    cursor: "pointer",
   },
-  otpInfoText: {
-    color: "#c7d2fe",
+  ghostBtn: {
+    marginTop: "8px",
+    background: "transparent",
+    color: "#6b7280",
+    border: "none",
+    padding: "10px",
     fontSize: "13px",
-    margin: "0 0 8px",
-  },
-  otpDemo: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "4px",
-  },
-  otpDemoLabel: {
-    color: "#94a3b8",
-    fontSize: "11px",
-  },
-  otpDemoCode: {
-    color: "#fbbf24",
-    fontSize: "22px",
-    fontWeight: 700,
-    letterSpacing: "6px",
+    cursor: "pointer",
+    textDecoration: "underline",
   },
   error: {
-    marginTop: "12px",
+    color: "#f87171",
+    fontSize: "13px",
+    marginTop: "10px",
     padding: "10px 14px",
-    background: "rgba(239,68,68,0.15)",
-    border: "1px solid rgba(239,68,68,0.4)",
+    background: "rgba(248,113,113,0.1)",
     borderRadius: "8px",
-    color: "#fca5a5",
-    fontSize: "14px",
+    border: "1px solid rgba(248,113,113,0.2)",
   },
-  terms: {
-    marginTop: "20px",
-    color: "#64748b",
-    fontSize: "12px",
+  otpInfo: {
     textAlign: "center",
-    lineHeight: 1.5,
+    padding: "20px",
+    background: "rgba(124,58,237,0.1)",
+    borderRadius: "12px",
+    border: "1px solid rgba(124,58,237,0.2)",
+    marginBottom: "8px",
   },
-  termLink: {
-    color: "#6366f1",
-    cursor: "pointer",
+  otpIcon: {
+    fontSize: "32px",
+    display: "block",
+    marginBottom: "8px",
+  },
+  otpText: {
+    color: "#e2e8f0",
+    fontSize: "14px",
+    margin: 0,
+  },
+  otpHint: {
+    color: "#6b7280",
+    fontSize: "12px",
+    marginTop: "6px",
+    marginBottom: 0,
+  },
+  legal: {
+    color: "#4b5563",
+    fontSize: "11px",
+    textAlign: "center",
+    marginTop: "24px",
+    lineHeight: 1.5,
   },
 };

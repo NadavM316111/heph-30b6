@@ -1,57 +1,79 @@
-/**
- * Confi — Client-side session and identity key storage
- *
- * JWT tokens and public-key metadata are stored in localStorage.
- * Private keys are ALSO stored in localStorage under a separate namespace,
- * keyed by email address. In a production app these would ideally be
- * stored in IndexedDB with non-extractable CryptoKey objects, but
- * localStorage is used here for maximum compatibility.
- */
+export interface Session {
+  email: string;
+  phone: string;
+  token: string;
+  issuedAt: number;
+  expiresAt: number;
+  displayName?: string;
+  avatar?: string;
+}
 
 const SESSION_KEY = "confi_session_v1";
-const IDENTITY_KEY_PREFIX = "confi_identity_v1_";
+const REFRESH_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-export interface SessionData {
-  email: string;
-  displayName: string;
-  avatar: string;        // emoji char or "data:image/..." base64
-  phone: string;
-  publicKey: string;     // Base64 SPKI — safe to share
-  token: string;         // JWT from server
-}
-
-export interface IdentityKeyData {
-  privateKey: string;    // Base64 PKCS8 — NEVER transmit
-  publicKey: string;     // Base64 SPKI  — mirror of server copy
-  createdAt: string;     // ISO timestamp
-}
-
-// ─── Session helpers ──────────────────────────────────────────────────────────
-
-export function saveSession(data: SessionData): void {
+function encodeSession(session: Session): string {
   try {
-    localStorage.setItem(SESSION_KEY, JSON.stringify(data));
+    return btoa(encodeURIComponent(JSON.stringify(session)));
   } catch {
-    console.warn("Confi: Could not persist session to localStorage");
+    return JSON.stringify(session);
   }
 }
 
-export function loadSession(): SessionData | null {
+function decodeSession(raw: string): Session | null {
+  try {
+    return JSON.parse(decodeURIComponent(atob(raw))) as Session;
+  } catch {
+    try {
+      return JSON.parse(raw) as Session;
+    } catch {
+      return null;
+    }
+  }
+}
+
+export function saveSession(session: Session): void {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(SESSION_KEY, encodeSession(session));
+  } catch {
+    // Storage quota exceeded or unavailable
+  }
+}
+
+export function getSession(): Session | null {
+  if (typeof window === "undefined") return null;
   try {
     const raw = localStorage.getItem(SESSION_KEY);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as SessionData;
-    // Basic shape validation
-    if (!parsed.email || !parsed.token) return null;
-    return parsed;
+    const session = decodeSession(raw);
+    if (!session) return null;
+
+    // Check expiry
+    if (Date.now() > session.expiresAt) {
+      clearSession();
+      return null;
+    }
+
+    // Refresh logic: if within threshold of expiry, extend
+    if (session.expiresAt - Date.now() < REFRESH_THRESHOLD_MS) {
+      const refreshed: Session = {
+        ...session,
+        issuedAt: Date.now(),
+        expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000,
+        token: refreshToken(session.token),
+      };
+      saveSession(refreshed);
+      return refreshed;
+    }
+
+    return session;
   } catch {
     return null;
   }
 }
 
 export function clearSession(): void {
+  if (typeof window === "undefined") return;
   try {
     localStorage.removeItem(SESSION_KEY);
   } catch {
@@ -59,75 +81,8 @@ export function clearSession(): void {
   }
 }
 
-export function updateSessionField<K extends keyof SessionData>(
-  field: K,
-  value: SessionData[K]
-): void {
-  const s = loadSession();
-  if (!s) return;
-  s[field] = value;
-  saveSession(s);
-}
-
-// ─── Identity key helpers ─────────────────────────────────────────────────────
-
-/**
- * Persist the private key for the given email.
- * Only called ONCE at registration time on the originating device.
- */
-export function saveIdentityKey(email: string, privateKeyB64: string, publicKeyB64?: string): void {
-  try {
-    const data: IdentityKeyData = {
-      privateKey: privateKeyB64,
-      publicKey: publicKeyB64 ?? "",
-      createdAt: new Date().toISOString(),
-    };
-    localStorage.setItem(IDENTITY_KEY_PREFIX + email, JSON.stringify(data));
-  } catch {
-    console.warn("Confi: Could not persist identity key to localStorage");
-  }
-}
-
-/**
- * Retrieve the stored identity key pair for the given email.
- * Returns null if the user has never registered on this device.
- */
-export function loadIdentityKey(email: string): IdentityKeyData | null {
-  try {
-    const raw = localStorage.getItem(IDENTITY_KEY_PREFIX + email);
-    if (!raw) return null;
-    return JSON.parse(raw) as IdentityKeyData;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Delete the stored identity key.
- * Called if the user explicitly revokes their identity or deletes their account.
- */
-export function clearIdentityKey(email: string): void {
-  try {
-    localStorage.removeItem(IDENTITY_KEY_PREFIX + email);
-  } catch {
-    // ignore
-  }
-}
-
-/**
- * List all emails that have an identity key stored on this device.
- */
-export function listStoredIdentities(): string[] {
-  const emails: string[] = [];
-  try {
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key?.startsWith(IDENTITY_KEY_PREFIX)) {
-        emails.push(key.slice(IDENTITY_KEY_PREFIX.length));
-      }
-    }
-  } catch {
-    // ignore
-  }
-  return emails;
+function refreshToken(oldToken: string): string {
+  const ts = Date.now().toString(36);
+  const tail = Math.random().toString(36).slice(2, 10);
+  return `${oldToken.split(".")[0] || oldToken}.refreshed.${ts}.${tail}`;
 }
