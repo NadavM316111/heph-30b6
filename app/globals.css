@@ -1,25 +1,20 @@
 *, *::before, *::after {
   box-sizing: border-box;
+  margin: 0;
+  padding: 0;
 }
 
 html, body {
-  margin: 0;
-  padding: 0;
-  font-family: 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
-  background: #f0f2f5;
+  height: 100%;
+  width: 100%;
+  background-color: #0f172a;
+  color: #0f172a;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  overscroll-behavior: none;
 }
 
-/* Mobile viewport fix */
-@supports (height: 100dvh) {
-  html {
-    height: 100dvh;
-  }
-}
-
-/* Remove default button/input styles */
+/* Remove default button and input styles */
 button {
   font-family: inherit;
 }
@@ -28,28 +23,88 @@ input, select, textarea {
   font-family: inherit;
 }
 
+/* OTP input focus */
+input[type="text"]:focus,
+input[type="email"]:focus,
+input[type="password"]:focus,
+input[type="tel"]:focus,
+select:focus {
+  outline: 2px solid #7C3AED;
+  outline-offset: 0;
+  border-color: #7C3AED !important;
+}
+
 /* Scrollbar styling */
 ::-webkit-scrollbar {
-  width: 4px;
+  width: 6px;
 }
+
 ::-webkit-scrollbar-track {
-  background: transparent;
+  background: #f1f5f9;
 }
+
 ::-webkit-scrollbar-thumb {
-  background: #ccc;
-  border-radius: 2px;
+  background: #cbd5e1;
+  border-radius: 3px;
 }
 
-/* Safe area for mobile notch/home indicator */
-.safe-area-bottom {
-  padding-bottom: env(safe-area-inset-bottom, 0px);
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
 }
 
-/* Smooth transitions */
-* {
-  transition: none;
+/* Smooth transitions for interactive elements */
+button {
+  transition: opacity 0.15s, transform 0.1s;
 }
 
-button, input, select {
-  transition: border-color 0.15s ease, background-color 0.15s ease, opacity 0.15s ease;
+button:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+button:hover:not(:disabled) {
+  opacity: 0.92;
+}
+
+/* Legal text typography */
+.legal-text h4 {
+  font-size: 16px;
+  font-weight: 700;
+  margin-bottom: 8px;
+  color: #0f172a;
+}
+
+.legal-text h5 {
+  font-size: 13px;
+  font-weight: 700;
+  margin: 14px 0 4px;
+  color: #0f172a;
+}
+
+.legal-text p {
+  font-size: 13px;
+  color: #374151;
+  line-height: 1.7;
+  margin-bottom: 8px;
+}
+
+/* Focus visible for accessibility */
+:focus-visible {
+  outline: 2px solid #7C3AED;
+  outline-offset: 2px;
+}
+
+/* Prevent text selection on UI elements */
+.no-select {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Animation for loading states */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.loading {
+  animation: pulse 1.5s ease-in-out infinite;
 }
