@@ -1,44 +1,42 @@
-import { q, P, ensure } from "./db";
-import { verifyJwt } from "./jwt";
-
-export interface AuthUser {
-  id: number;
-  phone: string;
-  email: string | null;
-  display_name: string;
-  avatar_color: string;
-  kyc_verified: boolean;
-  kyc_name: string | null;
-  kyc_dob: string | null;
-  created_at: string;
+export function generateUserId(): string {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let id = "CFI-";
+  for (let i = 0; i < 8; i++) {
+    id += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return id;
 }
 
-export async function getUserFromToken(authHeader: string | null): Promise<AuthUser | null> {
-  if (!authHeader?.startsWith("Bearer ")) return null;
-  const token = authHeader.slice(7);
-  const payload = verifyJwt(token);
-  if (!payload || payload.type !== "access") return null;
-
-  await ensure();
-  const rows = await q(
-    `SELECT id, phone, email, display_name, avatar_color, kyc_verified, kyc_name,
-            kyc_dob::text, created_at FROM ${P}users WHERE id = $1`,
-    [payload.sub]
-  );
-  if (!rows.length) return null;
-  return rows[0] as AuthUser;
+export function generateToken(): string {
+  const arr = new Uint8Array(32);
+  if (typeof crypto !== "undefined" && crypto.getRandomValues) {
+    crypto.getRandomValues(arr);
+  } else {
+    for (let i = 0; i < 32; i++) arr[i] = Math.floor(Math.random() * 256);
+  }
+  return Array.from(arr)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 }
 
-export function formatUser(row: AuthUser) {
-  return {
-    id: row.id,
-    phone: row.phone,
-    email: row.email || undefined,
-    display_name: row.display_name,
-    avatar_color: row.avatar_color,
-    kyc_verified: Boolean(row.kyc_verified),
-    kyc_name: row.kyc_name || undefined,
-    kyc_dob: row.kyc_dob || undefined,
-    created_at: row.created_at,
-  };
+export function generateOTP(): string {
+  return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+export function avatarUrl(seed: string, displayName: string): string {
+  const initials = displayName
+    .split(" ")
+    .map((w) => w[0])
+    .join("")
+    .toUpperCase()
+    .slice(0, 2);
+  return initials || seed.slice(0, 2).toUpperCase();
+}
+
+export function validatePhone(phone: string): boolean {
+  return /^\+?[1-9]\d{7,14}$/.test(phone.replace(/\s/g, ""));
+}
+
+export function normalizePhone(phone: string): string {
+  return phone.replace(/\s/g, "");
 }

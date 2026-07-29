@@ -1,1104 +1,1453 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
-import { COUNTRIES } from "@/lib/countries";
+import { useEffect, useState, useCallback, useRef } from "react";
 
-// ── Types ────────────────────────────────────────────────────────────────────
-
-type Screen =
-  | "splash"
-  | "auth"
-  | "otp"
-  | "profile-setup"
-  | "kyc"
-  | "main"
-  | "chat"
-  | "settings";
-
-type AuthMode = "login" | "signup";
-
-interface User {
-  email: string;
-  displayName: string;
+/* ─── types ─────────────────────────────────────────────────── */
+interface UserProfile {
+  user_id: string;
   phone: string;
-  avatarColor: string;
-  kycVerified: boolean;
-  legalName?: string;
-  country?: string;
-  deviceFingerprint?: string;
-  sessionToken?: string;
-  createdAt: string;
+  email?: string;
+  display_name: string;
+  legal_name: string;
+  avatar_seed: string;
+  kyc_confirmed: boolean;
+  verified: boolean;
+  created_at: string;
 }
 
-interface Message {
-  id: string;
-  senderId: string;
-  text: string;
-  timestamp: number;
-  confidential: boolean;
+type AuthStep =
+  | "idle"
+  | "phone"
+  | "otp"
+  | "password"
+  | "profile"
+  | "kyc"
+  | "done";
+
+type AuthMode = "register" | "login";
+
+/* ─── tiny hash (no bcrypt in browser — we SHA-256 the password) */
+async function hashPassword(password: string): Promise<string> {
+  const enc = new TextEncoder();
+  const buf = await crypto.subtle.digest("SHA-256", enc.encode(password));
+  return Array.from(new Uint8Array(buf))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 }
 
-interface Conversation {
-  id: string;
-  participants: string[];
-  displayName: string;
-  lastMessage: string;
-  lastTime: number;
-  confidentialMode: boolean;
-  ndaAccepted: boolean;
-  ndaTimestamp?: number;
-  messages: Message[];
+function generateAvatarSeed(): string {
+  return Math.random().toString(36).slice(2, 10);
 }
 
-// ── Constants ─────────────────────────────────────────────────────────────────
+function avatarInitials(displayName: string): string {
+  return displayName
+    .split(" ")
+    .map((w) => w[0])
+    .join("")
+    .toUpperCase()
+    .slice(0, 2);
+}
 
 const AVATAR_COLORS = [
-  "#6C63FF", "#FF6584", "#43D9AD", "#F7B731",
-  "#FC5C65", "#45AAF2", "#26DE81", "#FD9644",
+  "#6c63ff","#8b5cf6","#ec4899","#10b981","#f59e0b","#3b82f6","#ef4444","#14b8a6",
 ];
-
-const DEMO_CONVERSATIONS: Conversation[] = [
-  {
-    id: "conv-1",
-    participants: ["alice@demo.com"],
-    displayName: "Alice Chen",
-    lastMessage: "Can we switch to confidential mode?",
-    lastTime: Date.now() - 1000 * 60 * 5,
-    confidentialMode: false,
-    ndaAccepted: false,
-    messages: [
-      { id: "m1", senderId: "alice@demo.com", text: "Hey! How are you?", timestamp: Date.now() - 1000 * 60 * 10, confidential: false },
-      { id: "m2", senderId: "alice@demo.com", text: "Can we switch to confidential mode?", timestamp: Date.now() - 1000 * 60 * 5, confidential: false },
-    ],
-  },
-  {
-    id: "conv-2",
-    participants: ["bob@demo.com"],
-    displayName: "Bob Martinez",
-    lastMessage: "The merger docs are ready 🔐",
-    lastTime: Date.now() - 1000 * 60 * 30,
-    confidentialMode: true,
-    ndaAccepted: true,
-    ndaTimestamp: Date.now() - 1000 * 60 * 60,
-    messages: [
-      { id: "m3", senderId: "bob@demo.com", text: "The merger docs are ready 🔐", timestamp: Date.now() - 1000 * 60 * 30, confidential: true },
-    ],
-  },
-];
-
-// ── Device Fingerprint ────────────────────────────────────────────────────────
-
-function generateFingerprint(): string {
-  const nav = typeof window !== "undefined" ? window.navigator : null;
-  const raw = [
-    nav?.userAgent ?? "",
-    nav?.language ?? "",
-    nav?.platform ?? "",
-    screen?.width ?? 0,
-    screen?.height ?? 0,
-    screen?.colorDepth ?? 0,
-    new Date().getTimezoneOffset(),
-    nav?.hardwareConcurrency ?? 0,
-  ].join("|");
-
-  // Simple djb2 hash
-  let hash = 5381;
-  for (let i = 0; i < raw.length; i++) {
-    hash = (hash * 33) ^ raw.charCodeAt(i);
-  }
-  return "fp_" + Math.abs(hash).toString(16).padStart(8, "0");
+function avatarColor(seed: string): string {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+  return AVATAR_COLORS[h % AVATAR_COLORS.length];
 }
 
-function generateToken(): string {
-  const arr = new Uint8Array(32);
-  crypto.getRandomValues(arr);
-  return Array.from(arr).map(b => b.toString(16).padStart(2, "0")).join("");
-}
+/* ─── NDA text ───────────────────────────────────────────────── */
+const KYC_TEXT = `CONFI MESSAGING — IDENTITY VERIFICATION & CONFIDENTIALITY ACKNOWLEDGMENT
 
-function generateOTP(): string {
-  return Math.floor(100000 + Math.random() * 900000).toString();
-}
+By submitting your legal name below you confirm that:
 
-function formatTime(ts: number): string {
-  const d = new Date(ts);
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
+1. LEGAL IDENTITY. The full legal name you provide is accurate and corresponds to a government-issued identity document. This identity becomes your binding legal persona within the Confi platform.
 
-function formatRelative(ts: number): string {
-  const diff = Date.now() - ts;
-  if (diff < 60000) return "just now";
-  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
-  if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
-  return new Date(ts).toLocaleDateString();
-}
+2. NDA BINDING. Any conversation you initiate or participate in with Confidential Mode enabled is automatically covered by an international Non-Disclosure Agreement governed by the United Nations Convention on Contracts for the International Sale of Goods (CISG) and applicable domestic confidentiality law. All parties are bound by their verified legal identities.
 
-function getInitials(name: string): string {
-  return name.split(" ").map(w => w[0]).join("").toUpperCase().slice(0, 2);
-}
+3. JURISDICTION. You consent to jurisdiction in the courts of your country of residence for any disputes arising from confidential communications made through this platform.
 
-// ── Main Component ─────────────────────────────────────────────────────────────
+4. ACCURACY. You understand that providing a false legal name is a violation of these Terms and may constitute fraud under applicable law.
 
+5. RETENTION. Confi stores your legal name in encrypted form solely for the purpose of enforcing the above obligations. It is never shared with third parties except as required by valid legal process.
+
+By clicking "Confirm & Activate Account" you agree to all of the above.`;
+
+/* ═══════════════════════════════════════════════════════════════
+   MAIN COMPONENT
+═══════════════════════════════════════════════════════════════ */
 export default function ConfiApp() {
-  const [screen, setScreen] = useState<Screen>("splash");
-  const [authMode, setAuthMode] = useState<AuthMode>("signup");
-  const [user, setUser] = useState<User | null>(null);
-  const [conversations, setConversations] = useState<Conversation[]>(DEMO_CONVERSATIONS);
-  const [activeConv, setActiveConv] = useState<Conversation | null>(null);
-  const [fingerprint, setFingerprint] = useState<string>("");
+  const [user, setUser] = useState<UserProfile | null>(null);
+  const [sessionToken, setSessionToken] = useState<string>("");
+  const [booting, setBooting] = useState(true);
+  const [authMode, setAuthMode] = useState<AuthMode>("register");
 
-  // Auth fields
-  const [email, setEmail] = useState("");
+  // form state
+  const [step, setStep] = useState<AuthStep>("idle");
   const [phone, setPhone] = useState("");
+  const [email, setEmail] = useState("");
+  const [otp, setOtp] = useState("");
+  const [demoOtp, setDemoOtp] = useState("");
   const [password, setPassword] = useState("");
-  const [otpInput, setOtpInput] = useState("");
-  const [generatedOtp, setGeneratedOtp] = useState("");
-  const [authError, setAuthError] = useState("");
-  const [authLoading, setAuthLoading] = useState(false);
-  const [otpSent, setOtpSent] = useState(false);
-
-  // Profile setup
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
-  const [avatarColor, setAvatarColor] = useState(AVATAR_COLORS[0]);
-
-  // KYC
   const [legalName, setLegalName] = useState("");
-  const [selectedCountry, setSelectedCountry] = useState("");
-  const [kycError, setKycError] = useState("");
-  const [kycLoading, setKycLoading] = useState(false);
+  const [kycRead, setKycRead] = useState(false);
+  const [avatarSeed] = useState(generateAvatarSeed);
 
-  // Chat
-  const [messageText, setMessageText] = useState("");
-  const [ndaModalOpen, setNdaModalOpen] = useState(false);
-  const [ndaScrolled, setNdaScrolled] = useState(false);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [otpTimer, setOtpTimer] = useState(0);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // ── Init ──────────────────────────────────────────────────────────────────
+  // profile edit
+  const [showProfile, setShowProfile] = useState(false);
+  const [showNDA, setShowNDA] = useState(false);
 
+  /* ── track page ── */
   useEffect(() => {
-    const fp = generateFingerprint();
-    setFingerprint(fp);
-
-    // Track page
     fetch("/api/track", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path: window.location.pathname }),
     }).catch(() => {});
+  }, []);
 
-    // Restore session
-    const stored = localStorage.getItem("confi_user");
-    if (stored) {
-      try {
-        const parsed: User = JSON.parse(stored);
-        setUser(parsed);
-        const storedConvs = localStorage.getItem("confi_conversations");
-        if (storedConvs) setConversations(JSON.parse(storedConvs));
-        setScreen("main");
-      } catch {
-        localStorage.removeItem("confi_user");
+  /* ── restore session ── */
+  useEffect(() => {
+    (async () => {
+      const token = localStorage.getItem("confi_token");
+      if (token) {
+        try {
+          const res = await fetch("/api/confi/session", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ token }),
+          });
+          const data = await res.json();
+          if (data.ok) {
+            setUser(data.user);
+            setSessionToken(token);
+          } else {
+            localStorage.removeItem("confi_token");
+          }
+        } catch {
+          localStorage.removeItem("confi_token");
+        }
       }
-    }
-
-    setTimeout(() => {
-      if (!localStorage.getItem("confi_user")) setScreen("auth");
-    }, 1800);
+      setBooting(false);
+    })();
   }, []);
 
-  const saveUser = useCallback((u: User) => {
-    setUser(u);
-    localStorage.setItem("confi_user", JSON.stringify(u));
-  }, []);
-
-  const saveConversations = useCallback((convs: Conversation[]) => {
-    setConversations(convs);
-    localStorage.setItem("confi_conversations", JSON.stringify(convs));
-  }, []);
-
-  // ── Auth Flow ─────────────────────────────────────────────────────────────
-
-  const handleSendOTP = async () => {
-    if (!phone || phone.length < 7) {
-      setAuthError("Enter a valid phone number.");
-      return;
+  /* ── OTP countdown ── */
+  useEffect(() => {
+    if (otpTimer > 0) {
+      timerRef.current = setInterval(() => {
+        setOtpTimer((t) => {
+          if (t <= 1) {
+            if (timerRef.current) clearInterval(timerRef.current);
+            return 0;
+          }
+          return t - 1;
+        });
+      }, 1000);
     }
-    const otp = generateOTP();
-    setGeneratedOtp(otp);
-    setOtpSent(true);
-    setAuthError("");
-    // In production this would call Twilio/SNS — here we surface it in UI for demo
-    console.info(`[CONFI OTP] Code for ${phone}: ${otp}`);
-    alert(`[Demo] Your OTP is: ${otp}\n(In production this is sent via SMS)`);
-  };
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [otpTimer]);
 
-  const handleAuth = async () => {
-    setAuthError("");
-    if (!email || !password) { setAuthError("Email and password are required."); return; }
-    if (authMode === "signup" && !phone) { setAuthError("Phone number is required."); return; }
-    if (authMode === "signup" && (!otpSent || otpInput !== generatedOtp)) {
-      setAuthError("Please verify your phone number with the OTP first."); return;
-    }
-    setAuthLoading(true);
+  const clearError = () => setError("");
+
+  /* ── send OTP ── */
+  const sendOtp = useCallback(async (ph: string) => {
+    setLoading(true);
+    setError("");
     try {
-      const res = await fetch("/api/auth", {
+      const res = await fetch("/api/confi/otp", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: authMode, email, password }),
+        body: JSON.stringify({ phone: ph }),
       });
       const data = await res.json();
-      if (!data.ok) { setAuthError(data.error ?? "Authentication failed."); return; }
-
-      const token = generateToken();
-      const newUser: User = {
-        email: data.email,
-        displayName: displayName || data.email.split("@")[0],
-        phone: phone || "",
-        avatarColor: AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)],
-        kycVerified: false,
-        deviceFingerprint: fingerprint,
-        sessionToken: token,
-        createdAt: new Date().toISOString(),
-      };
-
-      if (authMode === "signup") {
-        saveUser(newUser);
-        setScreen("profile-setup");
+      if (data.ok) {
+        setDemoOtp(data.demoCode || "");
+        setStep("otp");
+        setOtpTimer(60);
       } else {
-        // Login — check for existing profile
-        const existing = localStorage.getItem("confi_user");
-        if (existing) {
-          const parsed: User = JSON.parse(existing);
-          // Verify device fingerprint
-          if (parsed.deviceFingerprint && parsed.deviceFingerprint !== fingerprint) {
-            setAuthError("⚠️ New device detected. For security, please re-verify identity.");
-          }
-          saveUser({ ...parsed, sessionToken: token, deviceFingerprint: fingerprint });
-        } else {
-          saveUser(newUser);
-          setScreen("profile-setup");
-          return;
-        }
-        setScreen("main");
+        setError(data.error || "Failed to send OTP");
       }
     } catch {
-      setAuthError("Network error. Please try again.");
+      setError("Network error");
     } finally {
-      setAuthLoading(false);
+      setLoading(false);
     }
-  };
+  }, []);
 
-  // ── Profile Setup ─────────────────────────────────────────────────────────
-
-  const handleProfileSave = () => {
-    if (!displayName.trim()) { return; }
-    if (!user) return;
-    const updated = { ...user, displayName: displayName.trim(), avatarColor };
-    saveUser(updated);
-    setScreen("main");
-  };
-
-  // ── KYC ───────────────────────────────────────────────────────────────────
-
-  const handleKYC = async () => {
-    if (!legalName.trim() || !selectedCountry) {
-      setKycError("Full legal name and country are required.");
-      return;
-    }
-    if (legalName.trim().split(" ").length < 2) {
-      setKycError("Please enter your full legal name (first and last name).");
-      return;
-    }
-    setKycLoading(true);
-    // Simulate server-side KYC verification delay
-    await new Promise(r => setTimeout(r, 1200));
-    setKycLoading(false);
-    if (!user) return;
-    const updated: User = {
-      ...user,
-      kycVerified: true,
-      legalName: legalName.trim(),
-      country: selectedCountry,
-    };
-    saveUser(updated);
-    setScreen("main");
-  };
-
-  // ── Confidential Mode & NDA ────────────────────────────────────────────────
-
-  const handleToggleConfidential = (conv: Conversation) => {
-    if (!user) return;
-    if (!conv.confidentialMode) {
-      // Turning ON
-      if (!user.kycVerified) {
-        alert("⚖️ KYC Required\n\nConfidential Mode requires identity verification before activating an NDA.\n\nPlease complete your KYC profile.");
-        setScreen("kyc");
-        return;
+  /* ── verify OTP ── */
+  const verifyOtp = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch("/api/confi/verify-otp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone, code: otp }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setStep("password");
+      } else {
+        setError(data.error || "Invalid OTP");
       }
-      setActiveConv(conv);
-      setNdaModalOpen(true);
-      setNdaScrolled(false);
-    } else {
-      // Turning OFF
-      if (!confirm("Deactivate Confidential Mode? The NDA remains on record for past messages.")) return;
-      const updated = conversations.map(c =>
-        c.id === conv.id ? { ...c, confidentialMode: false } : c
-      );
-      saveConversations(updated);
-      setActiveConv(updated.find(c => c.id === conv.id) ?? null);
+    } catch {
+      setError("Network error");
+    } finally {
+      setLoading(false);
     }
-  };
+  }, [phone, otp]);
 
-  const handleAcceptNDA = () => {
-    if (!activeConv || !user) return;
-    const updated = conversations.map(c =>
-      c.id === activeConv.id
-        ? { ...c, confidentialMode: true, ndaAccepted: true, ndaTimestamp: Date.now() }
-        : c
-    );
-    saveConversations(updated);
-    setActiveConv(updated.find(c => c.id === activeConv.id) ?? null);
-    setNdaModalOpen(false);
-  };
+  /* ── register ── */
+  const doRegister = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const pwHash = await hashPassword(password);
+      const res = await fetch("/api/confi/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          phone,
+          email: email || undefined,
+          displayName,
+          legalName,
+          passwordHash: pwHash,
+          avatarSeed,
+        }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        localStorage.setItem("confi_token", data.token);
+        setSessionToken(data.token);
+        setUser(data.user);
+        setStep("done");
+      } else {
+        setError(data.error || "Registration failed");
+      }
+    } catch {
+      setError("Network error");
+    } finally {
+      setLoading(false);
+    }
+  }, [phone, email, displayName, legalName, password, avatarSeed]);
 
-  // ── Send Message ──────────────────────────────────────────────────────────
+  /* ── login ── */
+  const doLogin = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const pwHash = await hashPassword(password);
+      const res = await fetch("/api/confi/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone, passwordHash: pwHash }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        localStorage.setItem("confi_token", data.token);
+        setSessionToken(data.token);
+        setUser(data.user);
+        setStep("done");
+      } else {
+        setError(data.error || "Login failed");
+      }
+    } catch {
+      setError("Network error");
+    } finally {
+      setLoading(false);
+    }
+  }, [phone, password]);
 
-  const handleSend = () => {
-    if (!messageText.trim() || !activeConv || !user) return;
-    const msg: Message = {
-      id: "m" + Date.now(),
-      senderId: user.email,
-      text: messageText.trim(),
-      timestamp: Date.now(),
-      confidential: activeConv.confidentialMode,
-    };
-    const updated = conversations.map(c =>
-      c.id === activeConv.id
-        ? { ...c, messages: [...c.messages, msg], lastMessage: msg.text, lastTime: msg.timestamp }
-        : c
-    );
-    saveConversations(updated);
-    setActiveConv(updated.find(c => c.id === activeConv.id) ?? null);
-    setMessageText("");
-  };
-
-  // ── Logout ────────────────────────────────────────────────────────────────
-
-  const handleLogout = () => {
-    localStorage.removeItem("confi_user");
+  /* ── logout ── */
+  const doLogout = useCallback(async () => {
+    try {
+      await fetch("/api/confi/logout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: sessionToken }),
+      });
+    } catch { /* ignore */ }
+    localStorage.removeItem("confi_token");
     setUser(null);
-    setScreen("auth");
-    setEmail(""); setPassword(""); setPhone(""); setOtpInput("");
-    setGeneratedOtp(""); setOtpSent(false);
-  };
+    setSessionToken("");
+    setStep("idle");
+    setPhone("");
+    setOtp("");
+    setPassword("");
+    setConfirmPassword("");
+    setDisplayName("");
+    setLegalName("");
+    setEmail("");
+    setError("");
+    setShowProfile(false);
+  }, [sessionToken]);
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // RENDER
-  // ─────────────────────────────────────────────────────────────────────────
-
-  // ── Splash ────────────────────────────────────────────────────────────────
-  if (screen === "splash") {
+  /* ════════════════════════════════════════════════════
+     RENDER — loading
+  ════════════════════════════════════════════════════ */
+  if (booting) {
     return (
-      <div style={styles.splash}>
-        <div style={styles.splashLogo}>🔐</div>
-        <div style={styles.splashTitle}>Confi</div>
-        <div style={styles.splashSub}>Messaging with legal confidentiality</div>
-        <div style={styles.splashSpinner} />
+      <div style={S.center}>
+        <div style={S.logo}>
+          <LockIcon size={32} />
+        </div>
+        <p style={{ color: "var(--text-muted)", marginTop: 16 }}>Loading Confi…</p>
       </div>
     );
   }
 
-  // ── Auth ──────────────────────────────────────────────────────────────────
-  if (screen === "auth") {
+  /* ════════════════════════════════════════════════════
+     RENDER — authenticated dashboard
+  ════════════════════════════════════════════════════ */
+  if (user) {
     return (
-      <div style={styles.authBg}>
-        <div style={styles.authCard}>
-          <div style={{ textAlign: "center", marginBottom: 28 }}>
-            <span style={{ fontSize: 44 }}>🔐</span>
-            <h1 style={styles.authTitle}>Confi</h1>
-            <p style={styles.authSubtitle}>Secure. Confidential. Legally binding.</p>
+      <div style={S.appShell}>
+        {/* Header */}
+        <header style={S.header}>
+          <div style={S.headerLeft}>
+            <LockIcon size={20} color="var(--accent)" />
+            <span style={S.headerTitle}>Confi</span>
+            <span style={S.verifiedBadge}>
+              <CheckIcon size={10} /> VERIFIED
+            </span>
           </div>
-
-          <div style={styles.tabRow}>
+          <div style={S.headerRight}>
+            <button style={S.iconBtn} onClick={() => setShowNDA(true)} title="View NDA details">
+              <ShieldIcon size={18} />
+            </button>
             <button
-              style={{ ...styles.tab, ...(authMode === "signup" ? styles.tabActive : {}) }}
-              onClick={() => { setAuthMode("signup"); setAuthError(""); }}
-            >Sign Up</button>
-            <button
-              style={{ ...styles.tab, ...(authMode === "login" ? styles.tabActive : {}) }}
-              onClick={() => { setAuthMode("login"); setAuthError(""); }}
-            >Log In</button>
+              style={S.avatarBtn}
+              onClick={() => setShowProfile(!showProfile)}
+            >
+              <Avatar seed={user.avatar_seed} name={user.display_name} size={36} />
+            </button>
           </div>
+        </header>
 
-          {authMode === "signup" && (
-            <div style={styles.phoneRow}>
-              <input
-                style={{ ...styles.input, flex: 1 }}
-                type="tel"
-                placeholder="Phone number (e.g. +1 555 0100)"
-                value={phone}
-                onChange={e => setPhone(e.target.value)}
-              />
-              <button style={styles.otpBtn} onClick={handleSendOTP}>
-                {otpSent ? "Resend" : "Send OTP"}
-              </button>
-            </div>
-          )}
-
-          {authMode === "signup" && otpSent && (
-            <input
-              style={styles.input}
-              type="text"
-              placeholder="Enter 6-digit OTP"
-              maxLength={6}
-              value={otpInput}
-              onChange={e => setOtpInput(e.target.value.replace(/\D/g, ""))}
-            />
-          )}
-
-          {authMode === "signup" && otpSent && otpInput.length === 6 && otpInput === generatedOtp && (
-            <div style={styles.verified}>✅ Phone verified</div>
-          )}
-
-          <input
-            style={styles.input}
-            type="email"
-            placeholder="Email address"
-            value={email}
-            onChange={e => setEmail(e.target.value)}
-          />
-          <input
-            style={styles.input}
-            type="password"
-            placeholder="Password (min 8 chars)"
-            value={password}
-            onChange={e => setPassword(e.target.value)}
-          />
-
-          {authError && <div style={styles.error}>{authError}</div>}
-
-          <button
-            style={{ ...styles.primaryBtn, opacity: authLoading ? 0.7 : 1 }}
-            onClick={handleAuth}
-            disabled={authLoading}
-          >
-            {authLoading ? "Please wait…" : authMode === "signup" ? "Create Account" : "Log In"}
-          </button>
-
-          <div style={styles.fingerprintNote}>
-            🖥️ Device ID: <code style={{ fontSize: 11 }}>{fingerprint || "generating…"}</code>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // ── Profile Setup ─────────────────────────────────────────────────────────
-  if (screen === "profile-setup") {
-    return (
-      <div style={styles.authBg}>
-        <div style={styles.authCard}>
-          <h2 style={styles.sectionTitle}>Set Up Your Profile</h2>
-          <p style={{ color: "#888", marginBottom: 24, fontSize: 14 }}>
-            Choose how you appear to other users.
-          </p>
-
-          <div style={{ textAlign: "center", marginBottom: 24 }}>
-            <div style={{ ...styles.avatar, backgroundColor: avatarColor, width: 80, height: 80, fontSize: 28, margin: "0 auto 16px" }}>
-              {getInitials(displayName || "?")}
-            </div>
-            <div style={styles.colorRow}>
-              {AVATAR_COLORS.map(c => (
-                <div
-                  key={c}
-                  onClick={() => setAvatarColor(c)}
-                  style={{
-                    ...styles.colorSwatch,
-                    backgroundColor: c,
-                    border: avatarColor === c ? "3px solid #fff" : "3px solid transparent",
-                    boxShadow: avatarColor === c ? "0 0 0 2px #6C63FF" : "none",
-                  }}
-                />
-              ))}
-            </div>
-          </div>
-
-          <input
-            style={styles.input}
-            type="text"
-            placeholder="Display name"
-            value={displayName}
-            onChange={e => setDisplayName(e.target.value)}
-          />
-
-          <button
-            style={{ ...styles.primaryBtn, opacity: displayName.trim() ? 1 : 0.5 }}
-            onClick={handleProfileSave}
-            disabled={!displayName.trim()}
-          >
-            Continue
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  // ── KYC ───────────────────────────────────────────────────────────────────
-  if (screen === "kyc") {
-    return (
-      <div style={styles.authBg}>
-        <div style={styles.authCard}>
-          <button style={styles.backBtn} onClick={() => setScreen("main")}>← Back</button>
-          <h2 style={styles.sectionTitle}>Identity Verification</h2>
-          <div style={styles.kycBadge}>⚖️ Required for Confidential Mode</div>
-          <p style={{ color: "#888", fontSize: 13, marginBottom: 20, lineHeight: 1.6 }}>
-            Confidential Mode activates an international NDA. For legal enforceability,
-            your real identity must be on record. This information is encrypted and used
-            solely for NDA attribution.
-          </p>
-
-          <label style={styles.label}>Full Legal Name *</label>
-          <input
-            style={styles.input}
-            type="text"
-            placeholder="e.g. Jane Elizabeth Smith"
-            value={legalName}
-            onChange={e => setLegalName(e.target.value)}
-          />
-
-          <label style={styles.label}>Country of Residence *</label>
-          <select
-            style={styles.select}
-            value={selectedCountry}
-            onChange={e => setSelectedCountry(e.target.value)}
-          >
-            <option value="">Select country…</option>
-            {COUNTRIES.map(c => (
-              <option key={c.code} value={c.code}>{c.name}</option>
-            ))}
-          </select>
-
-          {kycError && <div style={styles.error}>{kycError}</div>}
-
-          <div style={styles.legalNote}>
-            📋 By submitting, you confirm that the information provided is accurate and
-            that you are of legal age in your jurisdiction. False declaration may void NDA protections.
-          </div>
-
-          <button
-            style={{ ...styles.primaryBtn, opacity: kycLoading ? 0.7 : 1 }}
-            onClick={handleKYC}
-            disabled={kycLoading}
-          >
-            {kycLoading ? "Verifying…" : "Verify Identity"}
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  // ── Settings ──────────────────────────────────────────────────────────────
-  if (screen === "settings" && user) {
-    return (
-      <div style={styles.appShell}>
-        <div style={styles.topBar}>
-          <button style={styles.iconBtn} onClick={() => setScreen("main")}>←</button>
-          <span style={styles.topBarTitle}>Settings</span>
-          <div />
-        </div>
-        <div style={{ padding: 24 }}>
-          <div style={{ textAlign: "center", marginBottom: 32 }}>
-            <div style={{ ...styles.avatar, backgroundColor: user.avatarColor, width: 80, height: 80, fontSize: 28, margin: "0 auto 12px" }}>
-              {getInitials(user.displayName)}
-            </div>
-            <div style={{ fontWeight: 700, fontSize: 20 }}>{user.displayName}</div>
-            <div style={{ color: "#888", fontSize: 13 }}>{user.email}</div>
-          </div>
-
-          <div style={styles.settingsSection}>
-            <div style={styles.settingsLabel}>ACCOUNT</div>
-            <div style={styles.settingsRow}>
-              <span>📱 Phone</span><span style={{ color: "#888" }}>{user.phone || "Not set"}</span>
-            </div>
-            <div style={styles.settingsRow}>
-              <span>📧 Email</span><span style={{ color: "#888" }}>{user.email}</span>
-            </div>
-            <div style={styles.settingsRow}>
-              <span>📅 Member since</span><span style={{ color: "#888" }}>{new Date(user.createdAt).toLocaleDateString()}</span>
-            </div>
-          </div>
-
-          <div style={styles.settingsSection}>
-            <div style={styles.settingsLabel}>SECURITY</div>
-            <div style={styles.settingsRow}>
-              <span>🖥️ Device ID</span>
-              <span style={{ color: "#888", fontSize: 11, fontFamily: "monospace" }}>
-                {user.deviceFingerprint ?? fingerprint}
-              </span>
-            </div>
-            <div style={styles.settingsRow}>
-              <span>🔑 Session Token</span>
-              <span style={{ color: "#888", fontSize: 10, fontFamily: "monospace" }}>
-                {(user.sessionToken ?? "").slice(0, 16)}…
-              </span>
-            </div>
-          </div>
-
-          <div style={styles.settingsSection}>
-            <div style={styles.settingsLabel}>IDENTITY (KYC)</div>
-            {user.kycVerified ? (
-              <>
-                <div style={styles.settingsRow}>
-                  <span>✅ Status</span><span style={{ color: "#43D9AD" }}>Verified</span>
+        {/* Profile panel */}
+        {showProfile && (
+          <div style={S.profilePanel} className="animate-fade">
+            <div style={S.profileHeader}>
+              <Avatar seed={user.avatar_seed} name={user.display_name} size={64} />
+              <div>
+                <div style={S.profileName}>{user.display_name}</div>
+                <div style={S.profileId}>{user.user_id}</div>
+                <div style={S.kycTag}>
+                  <ShieldIcon size={11} color="var(--green)" />
+                  KYC Verified
                 </div>
-                <div style={styles.settingsRow}>
-                  <span>👤 Legal Name</span><span style={{ color: "#888" }}>{user.legalName}</span>
-                </div>
-                <div style={styles.settingsRow}>
-                  <span>🌍 Country</span>
-                  <span style={{ color: "#888" }}>
-                    {COUNTRIES.find(c => c.code === user.country)?.name ?? user.country}
-                  </span>
-                </div>
-              </>
-            ) : (
-              <div style={{ textAlign: "center", padding: "16px 0" }}>
-                <div style={{ color: "#F7B731", marginBottom: 12 }}>⚠️ Identity not verified</div>
-                <button style={styles.secondaryBtn} onClick={() => setScreen("kyc")}>
-                  Complete KYC Verification
+              </div>
+            </div>
+            <div style={S.profileInfo}>
+              <InfoRow label="Phone" value={user.phone} />
+              {user.email && <InfoRow label="Email" value={user.email} />}
+              <InfoRow label="Legal Name" value={user.legal_name} sensitive />
+              <InfoRow label="Joined" value={new Date(user.created_at).toLocaleDateString()} />
+            </div>
+            <button style={S.logoutBtn} onClick={doLogout}>
+              Sign Out
+            </button>
+          </div>
+        )}
+
+        {/* NDA modal */}
+        {showNDA && (
+          <Modal onClose={() => setShowNDA(false)}>
+            <div style={S.ndaModal}>
+              <div style={S.ndaHeader}>
+                <ShieldIcon size={24} color="var(--accent)" />
+                <h2 style={{ fontSize: 18, fontWeight: 700 }}>
+                  Your Confidentiality Agreement
+                </h2>
+              </div>
+              <p style={{ color: "var(--text-muted)", fontSize: 13, marginBottom: 12 }}>
+                This is the binding agreement attached to your verified identity.
+              </p>
+              <div style={S.ndaScroll}>
+                <pre style={S.ndaPre}>{KYC_TEXT}</pre>
+              </div>
+              <div style={S.ndaFooter}>
+                <span style={S.ndaSignature}>
+                  Signed as: <strong>{user.legal_name}</strong>
+                </span>
+                <button style={S.accentBtn} onClick={() => setShowNDA(false)}>
+                  Close
                 </button>
               </div>
-            )}
-          </div>
+            </div>
+          </Modal>
+        )}
 
-          <button style={styles.logoutBtn} onClick={handleLogout}>Log Out</button>
-        </div>
-      </div>
-    );
-  }
-
-  // ── Chat ──────────────────────────────────────────────────────────────────
-  if (screen === "chat" && activeConv && user) {
-    return (
-      <div style={styles.appShell}>
-        {/* NDA Modal */}
-        {ndaModalOpen && (
-          <div style={styles.modalOverlay}>
-            <div style={styles.modal}>
-              <h3 style={{ marginTop: 0, color: "#6C63FF" }}>🔐 Activate Confidential Mode</h3>
-              <p style={{ color: "#888", fontSize: 13, marginBottom: 12 }}>
-                By activating Confidential Mode, you and the recipient enter into a legally binding
-                Non-Disclosure Agreement (NDA) governed by international confidentiality law.
-              </p>
-
-              <div
-                style={styles.ndaScroll}
-                onScroll={e => {
-                  const el = e.currentTarget;
-                  if (el.scrollTop + el.clientHeight >= el.scrollHeight - 10) setNdaScrolled(true);
-                }}
-              >
-                <strong>INTERNATIONAL NON-DISCLOSURE AGREEMENT</strong>
-                <p>This Non-Disclosure Agreement ("Agreement") is entered into as of the date of activation
-                  ("Effective Date") between the parties identified below, who have been verified through the
-                  Confi platform's KYC process.</p>
-
-                <strong>1. PARTIES</strong>
-                <p>Party A: <em>{user.legalName}</em> (Country: {COUNTRIES.find(c => c.code === user.country)?.name ?? user.country}),
-                  verified via device fingerprint <em>{user.deviceFingerprint}</em>.<br />
-                  Party B: Recipient of this conversation thread identified within the Confi platform.</p>
-
-                <strong>2. DEFINITION OF CONFIDENTIAL INFORMATION</strong>
-                <p>All communications, documents, data, and information exchanged in this conversation thread
-                  while Confidential Mode is active shall constitute "Confidential Information," regardless of
-                  whether such information is marked as confidential.</p>
-
-                <strong>3. OBLIGATIONS</strong>
-                <p>Each party agrees to: (a) hold all Confidential Information in strict confidence;
-                  (b) not disclose Confidential Information to any third party without prior written consent;
-                  (c) use Confidential Information solely for purposes of this communication; and
-                  (d) protect the Confidential Information using at least the same degree of care used to
-                  protect their own confidential information, but in no event less than reasonable care.</p>
-
-                <strong>4. GOVERNING LAW & JURISDICTION</strong>
-                <p>This Agreement shall be governed by the laws applicable to international commercial
-                  contracts, including but not limited to the UNCITRAL Model Law on International Commercial
-                  Arbitration. Disputes shall be resolved by binding arbitration under ICC Rules.</p>
-
-                <strong>5. TERM</strong>
-                <p>This Agreement remains in effect for a period of five (5) years from the Effective Date,
-                  or until all Confidential Information becomes publicly available through no fault of either party.</p>
-
-                <strong>6. REMEDIES</strong>
-                <p>The parties acknowledge that breach of this Agreement may cause irreparable harm for which
-                  monetary damages are an inadequate remedy. Each party shall be entitled to seek injunctive
-                  relief in addition to any other remedies available at law or in equity.</p>
-
-                <strong>7. ELECTRONIC ACCEPTANCE</strong>
-                <p>The parties agree that electronic acceptance of this Agreement, including acceptance via the
-                  Confi platform, constitutes a valid and binding signature under applicable electronic
-                  commerce laws, including the UN Convention on the Use of Electronic Communications in
-                  International Contracts (2005).</p>
-
-                <strong>8. SEVERABILITY</strong>
-                <p>If any provision of this Agreement is found to be unenforceable, the remaining provisions
-                  shall continue in full force and effect.</p>
-
-                <p style={{ color: "#888", fontSize: 12 }}>
-                  Session: {user.sessionToken?.slice(0, 24)}… | Device: {user.deviceFingerprint} |
-                  Timestamp: {new Date().toISOString()}
+        {/* Main dashboard body */}
+        <main style={S.dashMain}>
+          <div style={S.dashCard} className="animate-fade">
+            <div style={S.dashWelcome}>
+              <Avatar seed={user.avatar_seed} name={user.display_name} size={56} />
+              <div>
+                <h1 style={S.dashTitle}>Welcome back, {user.display_name.split(" ")[0]}!</h1>
+                <p style={{ color: "var(--text-muted)", fontSize: 14, marginTop: 4 }}>
+                  Your identity is verified and your account is ready.
                 </p>
               </div>
-
-              {!ndaScrolled && (
-                <div style={{ color: "#F7B731", fontSize: 12, textAlign: "center", margin: "8px 0" }}>
-                  ↓ Scroll to read the full agreement before accepting
-                </div>
-              )}
-
-              <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
-                <button style={styles.secondaryBtn} onClick={() => setNdaModalOpen(false)}>Cancel</button>
-                <button
-                  style={{ ...styles.primaryBtn, flex: 1, opacity: ndaScrolled ? 1 : 0.4, margin: 0 }}
-                  onClick={handleAcceptNDA}
-                  disabled={!ndaScrolled}
-                >
-                  ✅ I Accept the NDA
-                </button>
-              </div>
             </div>
-          </div>
-        )}
 
-        {/* Chat Top Bar */}
-        <div style={{ ...styles.topBar, borderBottom: activeConv.confidentialMode ? "2px solid #6C63FF" : "1px solid #2a2a2a" }}>
-          <button style={styles.iconBtn} onClick={() => { setScreen("main"); setActiveConv(null); }}>←</button>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ ...styles.avatar, backgroundColor: AVATAR_COLORS[activeConv.id.charCodeAt(5) % AVATAR_COLORS.length] }}>
-              {getInitials(activeConv.displayName)}
+            <div style={S.statsRow}>
+              <StatCard icon={<ShieldIcon size={20} color="var(--green)" />} label="KYC Status" value="Verified" color="var(--green)" />
+              <StatCard icon={<LockIcon size={20} color="var(--accent)" />} label="Confidential Mode" value="Ready" color="var(--accent)" />
+              <StatCard icon={<IdIcon size={20} color="var(--yellow)" />} label="User ID" value={user.user_id} color="var(--yellow)" />
             </div>
-            <div>
-              <div style={{ fontWeight: 700, fontSize: 15 }}>{activeConv.displayName}</div>
-              {activeConv.confidentialMode && (
-                <div style={{ fontSize: 11, color: "#6C63FF" }}>🔐 Confidential Mode • NDA Active</div>
-              )}
-            </div>
-          </div>
-          <button
-            style={{
-              ...styles.confiBadge,
-              backgroundColor: activeConv.confidentialMode ? "#6C63FF" : "#2a2a2a",
-              color: activeConv.confidentialMode ? "#fff" : "#888",
-            }}
-            onClick={() => handleToggleConfidential(activeConv)}
-          >
-            {activeConv.confidentialMode ? "🔐" : "🔓"}
-          </button>
-        </div>
 
-        {/* NDA Banner */}
-        {activeConv.confidentialMode && activeConv.ndaTimestamp && (
-          <div style={styles.ndaBanner}>
-            ⚖️ NDA active since {new Date(activeConv.ndaTimestamp).toLocaleString()} · All messages legally protected
-          </div>
-        )}
-
-        {/* Messages */}
-        <div style={styles.messageList}>
-          {activeConv.messages.length === 0 && (
-            <div style={{ textAlign: "center", color: "#555", padding: 32 }}>
-              No messages yet. Start the conversation.
-            </div>
-          )}
-          {activeConv.messages.map(msg => {
-            const isMe = msg.senderId === user.email;
-            return (
-              <div key={msg.id} style={{ display: "flex", justifyContent: isMe ? "flex-end" : "flex-start", marginBottom: 8 }}>
-                <div style={{
-                  ...styles.bubble,
-                  backgroundColor: msg.confidential
-                    ? (isMe ? "#4a3fa0" : "#2d2560")
-                    : (isMe ? "#1a73e8" : "#2a2a2a"),
-                  borderRadius: isMe ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
-                }}>
-                  {msg.confidential && <div style={{ fontSize: 10, color: "#a89dff", marginBottom: 4 }}>🔐 Confidential</div>}
-                  <div style={{ fontSize: 15 }}>{msg.text}</div>
-                  <div style={{ fontSize: 10, color: "rgba(255,255,255,0.5)", textAlign: "right", marginTop: 4 }}>
-                    {formatTime(msg.timestamp)}
-                  </div>
+            <div style={S.ndaBanner}>
+              <ShieldIcon size={16} color="var(--accent)" />
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 14 }}>International NDA Active</div>
+                <div style={{ color: "var(--text-muted)", fontSize: 12, marginTop: 2 }}>
+                  Any Confidential Mode conversation you start is automatically covered
+                  under your verified legal identity: <strong>{user.legal_name}</strong>
                 </div>
               </div>
-            );
-          })}
-        </div>
+              <button style={S.linkBtn} onClick={() => setShowNDA(true)}>
+                View Agreement →
+              </button>
+            </div>
 
-        {/* Input */}
-        <div style={styles.inputBar}>
-          {activeConv.confidentialMode && (
-            <span style={{ fontSize: 18 }}>🔐</span>
-          )}
-          <input
-            style={styles.msgInput}
-            type="text"
-            placeholder={activeConv.confidentialMode ? "Confidential message…" : "Message…"}
-            value={messageText}
-            onChange={e => setMessageText(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && handleSend()}
-          />
-          <button style={styles.sendBtn} onClick={handleSend}>↑</button>
-        </div>
+            <div style={S.featureGrid}>
+              <FeatureCard
+                icon={<ChatIcon size={22} />}
+                title="Secure Messaging"
+                description="End-to-end encrypted conversations with NDA protection when Confidential Mode is on."
+              />
+              <FeatureCard
+                icon={<ShieldIcon size={22} />}
+                title="NDA-Protected Chats"
+                description="Toggle Confidential Mode to bind any conversation under international confidentiality law."
+              />
+              <FeatureCard
+                icon={<IdIcon size={22} />}
+                title="Verified Identity"
+                description="Your legal name is cryptographically tied to every confidential message you send."
+              />
+              <FeatureCard
+                icon={<LockIcon size={22} />}
+                title="KYC Compliance"
+                description="Your identity has been confirmed and is stored securely for legal enforcement."
+              />
+            </div>
+          </div>
+        </main>
       </div>
     );
   }
 
-  // ── Main (Conversation List) ───────────────────────────────────────────────
+  /* ════════════════════════════════════════════════════
+     RENDER — auth flow
+  ════════════════════════════════════════════════════ */
   return (
-    <div style={styles.appShell}>
-      <div style={styles.topBar}>
-        <div style={{ fontWeight: 800, fontSize: 22, color: "#6C63FF" }}>🔐 Confi</div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          {!user?.kycVerified && (
-            <button style={styles.kycAlert} onClick={() => setScreen("kyc")}>
-              ⚠️ Verify ID
+    <div style={S.authShell}>
+      <div style={S.authCard} className="animate-fade">
+        {/* Logo */}
+        <div style={S.authLogo}>
+          <div style={S.logoCircle}>
+            <LockIcon size={28} color="#fff" />
+          </div>
+          <h1 style={S.authTitle}>Confi</h1>
+          <p style={S.authSubtitle}>Secure messaging with legal identity protection</p>
+        </div>
+
+        {/* Mode toggle (only on idle/phone) */}
+        {(step === "idle" || step === "phone") && (
+          <div style={S.modeToggle}>
+            <button
+              style={{ ...S.modeBtn, ...(authMode === "register" ? S.modeBtnActive : {}) }}
+              onClick={() => { setAuthMode("register"); setStep("phone"); clearError(); }}
+            >
+              Create Account
             </button>
-          )}
-          <button style={styles.iconBtn} onClick={() => setScreen("settings")}>
-            {user && (
-              <div style={{ ...styles.avatar, backgroundColor: user.avatarColor, width: 32, height: 32, fontSize: 13 }}>
-                {getInitials(user.displayName)}
+            <button
+              style={{ ...S.modeBtn, ...(authMode === "login" ? S.modeBtnActive : {}) }}
+              onClick={() => { setAuthMode("login"); setStep("phone"); clearError(); }}
+            >
+              Sign In
+            </button>
+          </div>
+        )}
+
+        {/* Progress dots */}
+        {step !== "idle" && step !== "done" && (
+          <StepProgress
+            steps={authMode === "register"
+              ? ["Phone", "OTP", "Password", "Profile", "KYC"]
+              : ["Phone", "OTP", "Password"]}
+            current={
+              authMode === "register"
+                ? ["phone", "otp", "password", "profile", "kyc"].indexOf(step)
+                : ["phone", "otp", "password"].indexOf(step)
+            }
+          />
+        )}
+
+        {error && (
+          <div style={S.errorBox} className="animate-fade">
+            <AlertIcon size={15} /> {error}
+          </div>
+        )}
+
+        {/* ── STEP: idle ── */}
+        {step === "idle" && (
+          <div style={S.stepBody}>
+            <p style={{ color: "var(--text-muted)", textAlign: "center", lineHeight: 1.6 }}>
+              Confi combines end-to-end encrypted messaging with legally binding
+              confidentiality agreements, verified by your real identity.
+            </p>
+            <button
+              style={S.accentBtn}
+              onClick={() => { setAuthMode("register"); setStep("phone"); }}
+            >
+              Get Started
+            </button>
+            <button
+              style={S.ghostBtn}
+              onClick={() => { setAuthMode("login"); setStep("phone"); }}
+            >
+              Already have an account? Sign in
+            </button>
+          </div>
+        )}
+
+        {/* ── STEP: phone ── */}
+        {step === "phone" && (
+          <div style={S.stepBody}>
+            <label style={S.label}>
+              {authMode === "register" ? "📱 Your Phone Number" : "📱 Phone Number"}
+            </label>
+            <input
+              style={S.input}
+              type="tel"
+              placeholder="+1 555 000 0000"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && phone && sendOtp(phone)}
+            />
+            <p style={S.hint}>Include country code (e.g. +1, +44, +91)</p>
+
+            {authMode === "register" && (
+              <>
+                <label style={{ ...S.label, marginTop: 12 }}>
+                  📧 Email Backup <span style={S.optional}>(optional)</span>
+                </label>
+                <input
+                  style={S.input}
+                  type="email"
+                  placeholder="you@example.com"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                />
+              </>
+            )}
+
+            <button
+              style={{ ...S.accentBtn, marginTop: 20, opacity: loading || !phone ? 0.6 : 1 }}
+              disabled={loading || !phone}
+              onClick={() => sendOtp(phone)}
+            >
+              {loading ? <span className="spinner" /> : "Send Verification Code"}
+            </button>
+          </div>
+        )}
+
+        {/* ── STEP: otp ── */}
+        {step === "otp" && (
+          <div style={S.stepBody}>
+            <label style={S.label}>🔑 Verification Code</label>
+            <p style={{ color: "var(--text-muted)", fontSize: 13, marginBottom: 12 }}>
+              Sent to <strong>{phone}</strong>
+            </p>
+
+            {/* Demo OTP display (remove when real SMS is configured) */}
+            {demoOtp && (
+              <div style={S.demoOtpBox}>
+                <span style={{ fontSize: 11, color: "var(--text-dim)" }}>
+                  DEMO — no SMS configured
+                </span>
+                <span style={S.demoOtpCode}>{demoOtp}</span>
               </div>
             )}
-          </button>
-        </div>
-      </div>
 
-      {/* Welcome strip */}
-      {user && (
-        <div style={styles.welcomeStrip}>
-          <span>👋 Welcome back, <strong>{user.displayName}</strong></span>
-          {user.kycVerified
-            ? <span style={{ color: "#43D9AD", fontSize: 12 }}>✅ KYC Verified</span>
-            : <span style={{ color: "#F7B731", fontSize: 12 }}>⚠️ KYC Pending</span>
-          }
-        </div>
-      )}
+            <input
+              style={{ ...S.input, letterSpacing: 8, fontSize: 22, textAlign: "center" }}
+              type="text"
+              inputMode="numeric"
+              maxLength={6}
+              placeholder="000000"
+              value={otp}
+              onChange={(e) => setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
+              onKeyDown={(e) => e.key === "Enter" && otp.length === 6 && verifyOtp()}
+            />
 
-      <div style={{ padding: "12px 16px 6px", color: "#888", fontSize: 12, fontWeight: 600, letterSpacing: 1 }}>
-        CONVERSATIONS
-      </div>
+            <button
+              style={{ ...S.accentBtn, marginTop: 16, opacity: loading || otp.length < 6 ? 0.6 : 1 }}
+              disabled={loading || otp.length < 6}
+              onClick={verifyOtp}
+            >
+              {loading ? <span className="spinner" /> : "Verify Code"}
+            </button>
 
-      {conversations.map(conv => (
-        <div
-          key={conv.id}
-          style={styles.convRow}
-          onClick={() => { setActiveConv(conv); setScreen("chat"); }}
-        >
-          <div style={{ ...styles.avatar, backgroundColor: AVATAR_COLORS[conv.id.charCodeAt(5) % AVATAR_COLORS.length] }}>
-            {getInitials(conv.displayName)}
+            <button
+              style={{ ...S.ghostBtn, fontSize: 13, marginTop: 8 }}
+              disabled={otpTimer > 0}
+              onClick={() => sendOtp(phone)}
+            >
+              {otpTimer > 0 ? `Resend in ${otpTimer}s` : "Resend Code"}
+            </button>
           </div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ fontWeight: 700 }}>{conv.displayName}</span>
-              <span style={{ color: "#555", fontSize: 12 }}>{formatRelative(conv.lastTime)}</span>
+        )}
+
+        {/* ── STEP: password ── */}
+        {step === "password" && (
+          <div style={S.stepBody}>
+            <label style={S.label}>
+              {authMode === "register" ? "🔒 Create Password" : "🔒 Your Password"}
+            </label>
+            <input
+              style={S.input}
+              type="password"
+              placeholder="Min. 8 characters"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+
+            {authMode === "register" && (
+              <>
+                <label style={{ ...S.label, marginTop: 12 }}>🔒 Confirm Password</label>
+                <input
+                  style={S.input}
+                  type="password"
+                  placeholder="Repeat password"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                />
+              </>
+            )}
+
+            <button
+              style={{
+                ...S.accentBtn,
+                marginTop: 20,
+                opacity: loading || password.length < 8 ? 0.6 : 1,
+              }}
+              disabled={loading || password.length < 8}
+              onClick={() => {
+                if (authMode === "register") {
+                  if (password !== confirmPassword) {
+                    setError("Passwords do not match");
+                    return;
+                  }
+                  setStep("profile");
+                } else {
+                  doLogin();
+                }
+              }}
+            >
+              {loading ? <span className="spinner" /> : authMode === "register" ? "Continue" : "Sign In"}
+            </button>
+          </div>
+        )}
+
+        {/* ── STEP: profile ── */}
+        {step === "profile" && (
+          <div style={S.stepBody}>
+            <div style={S.avatarPreview}>
+              <Avatar seed={avatarSeed} name={displayName || "?"} size={64} />
+              <p style={{ color: "var(--text-muted)", fontSize: 12, marginTop: 8 }}>
+                Your avatar
+              </p>
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 3 }}>
-              {conv.confidentialMode && <span style={{ fontSize: 12 }}>🔐</span>}
-              <span style={{ color: "#888", fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {conv.lastMessage}
+
+            <label style={S.label}>👤 Display Name</label>
+            <input
+              style={S.input}
+              type="text"
+              placeholder="How others see you"
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+            />
+            <p style={S.hint}>This can be a nickname — it&apos;s shown in chats.</p>
+
+            <button
+              style={{
+                ...S.accentBtn,
+                marginTop: 16,
+                opacity: !displayName.trim() ? 0.6 : 1,
+              }}
+              disabled={!displayName.trim()}
+              onClick={() => setStep("kyc")}
+            >
+              Continue to Identity Verification
+            </button>
+          </div>
+        )}
+
+        {/* ── STEP: kyc ── */}
+        {step === "kyc" && (
+          <div style={S.stepBody}>
+            <div style={S.kycHeader}>
+              <ShieldIcon size={28} color="var(--accent)" />
+              <h2 style={{ fontSize: 16, fontWeight: 700 }}>Identity Verification (KYC)</h2>
+              <p style={{ color: "var(--text-muted)", fontSize: 13, lineHeight: 1.5 }}>
+                Your legal name creates a binding identity for NDA-protected conversations.
+              </p>
+            </div>
+
+            <div style={S.ndaScroll}>
+              <pre style={S.ndaPre}>{KYC_TEXT}</pre>
+            </div>
+
+            <label style={{ ...S.label, marginTop: 16 }}>⚖️ Your Full Legal Name</label>
+            <input
+              style={S.input}
+              type="text"
+              placeholder="As it appears on your ID"
+              value={legalName}
+              onChange={(e) => setLegalName(e.target.value)}
+            />
+            <p style={S.hint}>This will be attached to any NDA-covered conversation.</p>
+
+            <label style={S.checkLabel}>
+              <input
+                type="checkbox"
+                checked={kycRead}
+                onChange={(e) => setKycRead(e.target.checked)}
+                style={{ accentColor: "var(--accent)" }}
+              />
+              <span>
+                I have read and agree to the confidentiality terms above. I confirm
+                my legal name is accurate.
               </span>
+            </label>
+
+            <button
+              style={{
+                ...S.accentBtn,
+                marginTop: 16,
+                opacity: loading || !legalName.trim() || !kycRead ? 0.6 : 1,
+              }}
+              disabled={loading || !legalName.trim() || !kycRead}
+              onClick={doRegister}
+            >
+              {loading ? <span className="spinner" /> : "Confirm & Activate Account"}
+            </button>
+          </div>
+        )}
+
+        {step === "done" && (
+          <div style={S.stepBody}>
+            <div style={{ textAlign: "center" }}>
+              <div style={S.successCircle}>
+                <CheckIcon size={32} color="#fff" />
+              </div>
+              <h2 style={{ marginTop: 16, fontWeight: 700 }}>You&apos;re all set!</h2>
+              <p style={{ color: "var(--text-muted)", marginTop: 8 }}>
+                Redirecting to your dashboard…
+              </p>
             </div>
           </div>
-        </div>
-      ))}
-
-      <div style={{ padding: 24, textAlign: "center" }}>
-        <div style={{ color: "#555", fontSize: 13, marginBottom: 16 }}>
-          Start a new confidential conversation
-        </div>
-        <button
-          style={styles.newConvBtn}
-          onClick={() => {
-            const name = prompt("Recipient display name:");
-            if (!name?.trim()) return;
-            const newConv: Conversation = {
-              id: "conv-" + Date.now(),
-              participants: [name.trim()],
-              displayName: name.trim(),
-              lastMessage: "",
-              lastTime: Date.now(),
-              confidentialMode: false,
-              ndaAccepted: false,
-              messages: [],
-            };
-            const updated = [newConv, ...conversations];
-            saveConversations(updated);
-            setActiveConv(newConv);
-            setScreen("chat");
-          }}
-        >
-          + New Conversation
-        </button>
+        )}
       </div>
     </div>
   );
 }
 
-// ── Styles ────────────────────────────────────────────────────────────────────
+/* ═══════════════════════════════════════════════════════════════
+   SUB-COMPONENTS
+═══════════════════════════════════════════════════════════════ */
 
-const styles: Record<string, React.CSSProperties> = {
-  splash: {
-    display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-    height: "100vh", backgroundColor: "#0d0d0d", color: "#fff",
+function Avatar({ seed, name, size }: { seed: string; name: string; size: number }) {
+  const initials = avatarInitials(name);
+  const bg = avatarColor(seed);
+  return (
+    <div
+      style={{
+        width: size,
+        height: size,
+        borderRadius: "50%",
+        background: bg,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        fontSize: size * 0.36,
+        fontWeight: 700,
+        color: "#fff",
+        flexShrink: 0,
+        boxShadow: `0 0 0 2px var(--surface), 0 0 0 4px ${bg}44`,
+      }}
+    >
+      {initials || "?"}
+    </div>
+  );
+}
+
+function StepProgress({ steps, current }: { steps: string[]; current: number }) {
+  return (
+    <div style={{ display: "flex", gap: 6, justifyContent: "center", marginBottom: 20 }}>
+      {steps.map((s, i) => (
+        <div key={s} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+          <div
+            style={{
+              width: i <= current ? 28 : 8,
+              height: 6,
+              borderRadius: 4,
+              background: i < current
+                ? "var(--green)"
+                : i === current
+                ? "var(--accent)"
+                : "var(--border2)",
+              transition: "all 0.3s ease",
+            }}
+          />
+          {i === current && (
+            <span style={{ fontSize: 10, color: "var(--accent)", fontWeight: 600 }}>{s}</span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function StatCard({ icon, label, value, color }: { icon: React.ReactNode; label: string; value: string; color: string }) {
+  return (
+    <div style={S.statCard}>
+      {icon}
+      <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>{label}</div>
+      <div style={{ fontSize: 13, fontWeight: 700, color, marginTop: 2 }}>{value}</div>
+    </div>
+  );
+}
+
+function FeatureCard({ icon, title, description }: { icon: React.ReactNode; title: string; description: string }) {
+  return (
+    <div style={S.featureCard}>
+      <div style={S.featureIcon}>{icon}</div>
+      <div style={S.featureTitle}>{title}</div>
+      <div style={S.featureDesc}>{description}</div>
+    </div>
+  );
+}
+
+function InfoRow({ label, value, sensitive }: { label: string; value: string; sensitive?: boolean }) {
+  const [show, setShow] = useState(!sensitive);
+  return (
+    <div style={S.infoRow}>
+      <span style={S.infoLabel}>{label}</span>
+      <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <span style={S.infoValue}>{show ? value : "••••••••"}</span>
+        {sensitive && (
+          <button style={S.tinyBtn} onClick={() => setShow(!show)}>
+            {show ? "hide" : "show"}
+          </button>
+        )}
+      </span>
+    </div>
+  );
+}
+
+function Modal({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
+  return (
+    <div style={S.modalOverlay} onClick={onClose}>
+      <div style={S.modalContent} onClick={(e) => e.stopPropagation()} className="animate-fade">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/* ── Icons (inline SVG) ── */
+function LockIcon({ size = 20, color = "currentColor" }: { size?: number; color?: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+    </svg>
+  );
+}
+
+function ShieldIcon({ size = 20, color = "currentColor" }: { size?: number; color?: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+    </svg>
+  );
+}
+
+function CheckIcon({ size = 20, color = "currentColor" }: { size?: number; color?: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="20 6 9 17 4 12" />
+    </svg>
+  );
+}
+
+function AlertIcon({ size = 16, color = "var(--red)" }: { size?: number; color?: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10" />
+      <line x1="12" y1="8" x2="12" y2="12" />
+      <line x1="12" y1="16" x2="12.01" y2="16" />
+    </svg>
+  );
+}
+
+function IdIcon({ size = 20, color = "currentColor" }: { size?: number; color?: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="5" width="20" height="14" rx="2" />
+      <line x1="8" y1="10" x2="8" y2="10" />
+      <line x1="8" y1="14" x2="16" y2="14" />
+      <circle cx="8" cy="10" r="2" />
+      <line x1="11" y1="10" x2="16" y2="10" />
+    </svg>
+  );
+}
+
+function ChatIcon({ size = 20, color = "currentColor" }: { size?: number; color?: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+    </svg>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   STYLES
+═══════════════════════════════════════════════════════════════ */
+const S: Record<string, React.CSSProperties> = {
+  /* ── Layout ── */
+  center: {
+    height: "100vh",
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "center",
+    background: "var(--bg)",
   },
-  splashLogo: { fontSize: 64, marginBottom: 16 },
-  splashTitle: { fontSize: 40, fontWeight: 800, color: "#6C63FF", letterSpacing: 2 },
-  splashSub: { color: "#888", marginTop: 8, fontSize: 15 },
-  splashSpinner: {
-    marginTop: 40, width: 32, height: 32, borderRadius: "50%",
-    border: "3px solid #2a2a2a", borderTop: "3px solid #6C63FF",
-    animation: "spin 1s linear infinite",
+  logo: {
+    width: 64,
+    height: 64,
+    borderRadius: "50%",
+    background: "var(--surface2)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    boxShadow: "0 0 32px var(--accent-glow)",
   },
 
-  authBg: {
-    minHeight: "100vh", backgroundColor: "#0d0d0d", display: "flex",
-    alignItems: "center", justifyContent: "center", padding: 16,
+  /* ── Auth shell ── */
+  authShell: {
+    minHeight: "100vh",
+    background: "var(--bg)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: "24px 16px",
   },
   authCard: {
-    backgroundColor: "#161616", borderRadius: 20, padding: 32,
-    width: "100%", maxWidth: 420, boxShadow: "0 8px 40px rgba(108,99,255,0.15)",
+    width: "100%",
+    maxWidth: 420,
+    background: "var(--surface)",
+    borderRadius: "var(--radius)",
+    border: "1px solid var(--border2)",
+    padding: "32px 28px",
+    boxShadow: "var(--shadow-lg)",
   },
-  authTitle: { fontSize: 32, fontWeight: 800, color: "#6C63FF", margin: "8px 0 4px" },
-  authSubtitle: { color: "#888", fontSize: 14 },
-  tabRow: { display: "flex", gap: 8, marginBottom: 20 },
-  tab: {
-    flex: 1, padding: "10px 0", borderRadius: 10, border: "none",
-    backgroundColor: "#2a2a2a", color: "#888", cursor: "pointer", fontWeight: 600, fontSize: 14,
+  authLogo: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    marginBottom: 28,
+    gap: 8,
   },
-  tabActive: { backgroundColor: "#6C63FF", color: "#fff" },
-  input: {
-    width: "100%", padding: "12px 16px", borderRadius: 10, border: "1px solid #2a2a2a",
-    backgroundColor: "#0d0d0d", color: "#fff", fontSize: 14, marginBottom: 12,
-    outline: "none", boxSizing: "border-box",
+  logoCircle: {
+    width: 64,
+    height: 64,
+    borderRadius: "50%",
+    background: "linear-gradient(135deg, var(--accent), var(--accent2))",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    boxShadow: "0 0 32px var(--accent-glow)",
+    marginBottom: 4,
   },
-  select: {
-    width: "100%", padding: "12px 16px", borderRadius: 10, border: "1px solid #2a2a2a",
-    backgroundColor: "#0d0d0d", color: "#fff", fontSize: 14, marginBottom: 12,
-    outline: "none", boxSizing: "border-box",
+  authTitle: {
+    fontSize: 28,
+    fontWeight: 800,
+    background: "linear-gradient(135deg, var(--accent), #a78bfa)",
+    WebkitBackgroundClip: "text",
+    WebkitTextFillColor: "transparent",
+    letterSpacing: -0.5,
   },
-  phoneRow: { display: "flex", gap: 8, marginBottom: 0 },
-  otpBtn: {
-    padding: "12px 16px", borderRadius: 10, border: "none",
-    backgroundColor: "#6C63FF", color: "#fff", cursor: "pointer", fontWeight: 600,
-    whiteSpace: "nowrap", marginBottom: 12,
+  authSubtitle: {
+    color: "var(--text-muted)",
+    fontSize: 13,
+    textAlign: "center",
   },
-  verified: { color: "#43D9AD", fontSize: 13, marginBottom: 12 },
-  error: {
-    backgroundColor: "#2d1515", color: "#FC5C65", padding: "10px 14px",
-    borderRadius: 10, fontSize: 13, marginBottom: 12,
+  modeToggle: {
+    display: "flex",
+    background: "var(--surface2)",
+    borderRadius: "var(--radius-sm)",
+    padding: 4,
+    marginBottom: 24,
+    gap: 4,
   },
-  primaryBtn: {
-    width: "100%", padding: "14px 0", borderRadius: 10, border: "none",
-    backgroundColor: "#6C63FF", color: "#fff", fontSize: 16, fontWeight: 700,
-    cursor: "pointer", marginBottom: 12,
+  modeBtn: {
+    flex: 1,
+    padding: "9px 0",
+    borderRadius: 6,
+    background: "transparent",
+    color: "var(--text-muted)",
+    fontSize: 13,
+    fontWeight: 600,
+    transition: "all 0.2s",
   },
-  secondaryBtn: {
-    padding: "10px 18px", borderRadius: 10, border: "1px solid #6C63FF",
-    backgroundColor: "transparent", color: "#6C63FF", fontSize: 14, fontWeight: 600,
-    cursor: "pointer",
-  },
-  fingerprintNote: {
-    color: "#555", fontSize: 12, textAlign: "center", marginTop: 8, wordBreak: "break-all",
-  },
-  label: { display: "block", color: "#888", fontSize: 12, marginBottom: 6, fontWeight: 600, letterSpacing: 0.5 },
-  kycBadge: {
-    display: "inline-block", backgroundColor: "#1a1a2e", color: "#6C63FF",
-    borderRadius: 20, padding: "6px 14px", fontSize: 13, fontWeight: 600, marginBottom: 16,
-  },
-  legalNote: {
-    backgroundColor: "#1a1a1a", borderLeft: "3px solid #6C63FF",
-    padding: "12px 16px", borderRadius: 4, color: "#888", fontSize: 12,
-    lineHeight: 1.6, marginBottom: 16,
+  modeBtnActive: {
+    background: "var(--surface3)",
+    color: "var(--text)",
+    boxShadow: "var(--shadow)",
   },
 
-  appShell: { display: "flex", flexDirection: "column", height: "100vh", backgroundColor: "#0d0d0d", color: "#fff", maxWidth: 600, margin: "0 auto" },
-  topBar: {
-    display: "flex", alignItems: "center", justifyContent: "space-between",
-    padding: "12px 16px", borderBottom: "1px solid #1e1e1e",
-    backgroundColor: "#121212", position: "sticky" as const, top: 0, zIndex: 10,
+  /* ── Form ── */
+  stepBody: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 10,
   },
-  topBarTitle: { fontWeight: 700, fontSize: 17 },
-  iconBtn: { background: "none", border: "none", cursor: "pointer", color: "#fff", fontSize: 18, padding: 4 },
-  welcomeStrip: {
-    display: "flex", justifyContent: "space-between", alignItems: "center",
-    padding: "10px 16px", backgroundColor: "#161616", borderBottom: "1px solid #1e1e1e",
+  label: {
+    fontSize: 13,
+    fontWeight: 600,
+    color: "var(--text-muted)",
+    marginBottom: 2,
+  },
+  input: {
+    width: "100%",
+    padding: "12px 14px",
+    background: "var(--surface2)",
+    border: "1.5px solid var(--border2)",
+    borderRadius: "var(--radius-sm)",
+    color: "var(--text)",
+    fontSize: 15,
+    transition: "border-color 0.2s",
+  },
+  hint: {
+    fontSize: 11,
+    color: "var(--text-dim)",
+    marginTop: -4,
+  },
+  optional: {
+    fontSize: 11,
+    color: "var(--text-dim)",
+    fontWeight: 400,
+  },
+  checkLabel: {
+    display: "flex",
+    alignItems: "flex-start",
+    gap: 10,
+    fontSize: 13,
+    color: "var(--text-muted)",
+    lineHeight: 1.5,
+    cursor: "pointer",
+  },
+  accentBtn: {
+    width: "100%",
+    padding: "13px",
+    background: "linear-gradient(135deg, var(--accent), var(--accent2))",
+    color: "#fff",
+    borderRadius: "var(--radius-sm)",
+    fontSize: 15,
+    fontWeight: 700,
+    letterSpacing: 0.2,
+    boxShadow: "0 4px 16px var(--accent-glow)",
+    transition: "opacity 0.2s, transform 0.1s",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  ghostBtn: {
+    width: "100%",
+    padding: "11px",
+    background: "transparent",
+    border: "1px solid var(--border2)",
+    color: "var(--text-muted)",
+    borderRadius: "var(--radius-sm)",
     fontSize: 14,
+    fontWeight: 500,
+    transition: "border-color 0.2s, color 0.2s",
   },
-  kycAlert: {
-    backgroundColor: "#2d2000", color: "#F7B731", border: "1px solid #F7B731",
-    borderRadius: 8, padding: "4px 10px", fontSize: 12, cursor: "pointer", fontWeight: 600,
+  errorBox: {
+    padding: "10px 14px",
+    background: "rgba(239,68,68,0.12)",
+    border: "1px solid rgba(239,68,68,0.3)",
+    borderRadius: "var(--radius-sm)",
+    color: "var(--red)",
+    fontSize: 13,
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 8,
   },
-  avatar: {
-    width: 44, height: 44, borderRadius: "50%", display: "flex",
-    alignItems: "center", justifyContent: "center", color: "#fff",
-    fontWeight: 700, fontSize: 16, flexShrink: 0,
+  demoOtpBox: {
+    padding: "12px 16px",
+    background: "rgba(245,158,11,0.1)",
+    border: "1px dashed rgba(245,158,11,0.4)",
+    borderRadius: "var(--radius-sm)",
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    gap: 6,
   },
-  colorRow: { display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap" as const },
-  colorSwatch: { width: 28, height: 28, borderRadius: "50%", cursor: "pointer", transition: "transform 0.15s" },
-  convRow: {
-    display: "flex", alignItems: "center", gap: 12, padding: "12px 16px",
-    borderBottom: "1px solid #1a1a1a", cursor: "pointer", transition: "background 0.15s",
+  demoOtpCode: {
+    fontSize: 28,
+    fontWeight: 800,
+    letterSpacing: 10,
+    color: "var(--yellow)",
+    fontVariantNumeric: "tabular-nums",
   },
-  ndaBanner: {
-    backgroundColor: "#1a1730", color: "#a89dff", padding: "8px 16px",
-    fontSize: 12, textAlign: "center", borderBottom: "1px solid #2d2560",
+  avatarPreview: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    marginBottom: 8,
   },
-  messageList: { flex: 1, overflowY: "auto" as const, padding: "16px", display: "flex", flexDirection: "column" },
-  bubble: { maxWidth: "75%", padding: "10px 14px", color: "#fff", wordBreak: "break-word" as const },
-  inputBar: {
-    display: "flex", alignItems: "center", gap: 10, padding: "10px 16px",
-    borderTop: "1px solid #1e1e1e", backgroundColor: "#121212",
-  },
-  msgInput: {
-    flex: 1, padding: "12px 16px", borderRadius: 24, border: "1px solid #2a2a2a",
-    backgroundColor: "#1a1a1a", color: "#fff", fontSize: 14, outline: "none",
-  },
-  sendBtn: {
-    width: 44, height: 44, borderRadius: "50%", backgroundColor: "#6C63FF",
-    color: "#fff", border: "none", fontSize: 18, cursor: "pointer", fontWeight: 700,
-    display: "flex", alignItems: "center", justifyContent: "center",
-  },
-  confiBadge: {
-    padding: "6px 12px", borderRadius: 20, border: "none", cursor: "pointer",
-    fontSize: 18, transition: "background 0.2s",
-  },
-  newConvBtn: {
-    padding: "12px 24px", borderRadius: 24, border: "none",
-    backgroundColor: "#6C63FF", color: "#fff", fontSize: 15, fontWeight: 700, cursor: "pointer",
-  },
-  sectionTitle: { color: "#fff", fontWeight: 700, fontSize: 22, marginBottom: 8, marginTop: 0 },
-  backBtn: {
-    background: "none", border: "none", color: "#6C63FF", fontSize: 15,
-    cursor: "pointer", padding: 0, marginBottom: 16, fontWeight: 600,
-  },
-  settingsSection: { marginBottom: 28 },
-  settingsLabel: { color: "#555", fontSize: 11, fontWeight: 700, letterSpacing: 1, marginBottom: 10 },
-  settingsRow: {
-    display: "flex", justifyContent: "space-between", alignItems: "center",
-    padding: "12px 0", borderBottom: "1px solid #1a1a1a", fontSize: 14,
-  },
-  logoutBtn: {
-    width: "100%", padding: "14px 0", borderRadius: 10, border: "1px solid #FC5C65",
-    backgroundColor: "transparent", color: "#FC5C65", fontSize: 15, fontWeight: 700,
-    cursor: "pointer", marginTop: 8,
-  },
-  modalOverlay: {
-    position: "fixed" as const, inset: 0, backgroundColor: "rgba(0,0,0,0.85)",
-    display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 16,
-  },
-  modal: {
-    backgroundColor: "#161616", borderRadius: 20, padding: 24,
-    width: "100%", maxWidth: 480, boxShadow: "0 20px 60px rgba(0,0,0,0.6)",
+  kycHeader: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    gap: 8,
+    textAlign: "center",
+    padding: "12px 0",
   },
   ndaScroll: {
-    height: 240, overflowY: "auto" as const, backgroundColor: "#0d0d0d",
-    borderRadius: 10, padding: "14px 16px", fontSize: 12, color: "#ccc",
-    lineHeight: 1.7, border: "1px solid #2a2a2a",
+    maxHeight: 200,
+    overflowY: "auto",
+    background: "var(--surface2)",
+    borderRadius: "var(--radius-sm)",
+    border: "1px solid var(--border2)",
+    padding: "12px 14px",
+  },
+  ndaPre: {
+    fontSize: 11,
+    lineHeight: 1.7,
+    color: "var(--text-muted)",
+    whiteSpace: "pre-wrap",
+    wordBreak: "break-word",
+    fontFamily: "inherit",
+  },
+  successCircle: {
+    width: 72,
+    height: 72,
+    borderRadius: "50%",
+    background: "linear-gradient(135deg, var(--green), #059669)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    margin: "0 auto",
+    boxShadow: "0 0 32px var(--green-glow)",
+    animation: "pulse-ring 2s infinite",
+  },
+
+  /* ── App shell ── */
+  appShell: {
+    minHeight: "100vh",
+    background: "var(--bg)",
+    display: "flex",
+    flexDirection: "column",
+  },
+  header: {
+    height: 60,
+    background: "var(--surface)",
+    borderBottom: "1px solid var(--border)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: "0 20px",
+    position: "sticky",
+    top: 0,
+    zIndex: 100,
+  },
+  headerLeft: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+  },
+  headerTitle: {
+    fontWeight: 800,
+    fontSize: 20,
+    background: "linear-gradient(135deg, var(--accent), #a78bfa)",
+    WebkitBackgroundClip: "text",
+    WebkitTextFillColor: "transparent",
+  },
+  headerRight: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+  },
+  verifiedBadge: {
+    fontSize: 9,
+    fontWeight: 700,
+    color: "var(--green)",
+    background: "rgba(16,185,129,0.12)",
+    border: "1px solid rgba(16,185,129,0.3)",
+    borderRadius: 20,
+    padding: "2px 7px",
+    display: "flex",
+    alignItems: "center",
+    gap: 4,
+    letterSpacing: 0.5,
+  },
+  iconBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: "50%",
+    background: "var(--surface2)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    color: "var(--text-muted)",
+    border: "1px solid var(--border)",
+  },
+  avatarBtn: {
+    background: "transparent",
+    border: "none",
+    padding: 0,
+    cursor: "pointer",
+  },
+
+  /* ── Profile panel ── */
+  profilePanel: {
+    position: "absolute",
+    top: 68,
+    right: 16,
+    width: 300,
+    background: "var(--surface)",
+    border: "1px solid var(--border2)",
+    borderRadius: "var(--radius)",
+    padding: 20,
+    zIndex: 200,
+    boxShadow: "var(--shadow-lg)",
+  },
+  profileHeader: {
+    display: "flex",
+    gap: 14,
+    alignItems: "center",
+    marginBottom: 16,
+    paddingBottom: 16,
+    borderBottom: "1px solid var(--border)",
+  },
+  profileName: {
+    fontWeight: 700,
+    fontSize: 16,
+  },
+  profileId: {
+    fontSize: 12,
+    color: "var(--text-dim)",
+    fontFamily: "monospace",
+    marginTop: 2,
+  },
+  kycTag: {
+    fontSize: 11,
+    color: "var(--green)",
+    display: "flex",
+    alignItems: "center",
+    gap: 4,
+    marginTop: 4,
+    fontWeight: 600,
+  },
+  profileInfo: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 2,
+    marginBottom: 16,
+  },
+  infoRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: "7px 0",
+    borderBottom: "1px solid var(--border)",
+  },
+  infoLabel: {
+    fontSize: 12,
+    color: "var(--text-dim)",
+  },
+  infoValue: {
+    fontSize: 13,
+    fontWeight: 500,
+  },
+  tinyBtn: {
+    fontSize: 10,
+    color: "var(--accent)",
+    background: "transparent",
+    border: "1px solid var(--border2)",
+    borderRadius: 4,
+    padding: "1px 6px",
+    cursor: "pointer",
+  },
+  logoutBtn: {
+    width: "100%",
+    padding: "10px",
+    background: "rgba(239,68,68,0.1)",
+    border: "1px solid rgba(239,68,68,0.3)",
+    color: "var(--red)",
+    borderRadius: "var(--radius-sm)",
+    fontSize: 13,
+    fontWeight: 600,
+  },
+
+  /* ── Dashboard ── */
+  dashMain: {
+    flex: 1,
+    display: "flex",
+    justifyContent: "center",
+    padding: "32px 16px",
+  },
+  dashCard: {
+    width: "100%",
+    maxWidth: 760,
+    display: "flex",
+    flexDirection: "column",
+    gap: 24,
+  },
+  dashWelcome: {
+    display: "flex",
+    alignItems: "center",
+    gap: 16,
+    padding: "24px",
+    background: "var(--surface)",
+    borderRadius: "var(--radius)",
+    border: "1px solid var(--border2)",
+  },
+  dashTitle: {
+    fontSize: 22,
+    fontWeight: 800,
+  },
+  statsRow: {
+    display: "grid",
+    gridTemplateColumns: "repeat(3, 1fr)",
+    gap: 12,
+  },
+  statCard: {
+    background: "var(--surface)",
+    border: "1px solid var(--border2)",
+    borderRadius: "var(--radius)",
+    padding: "16px",
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    textAlign: "center",
+  },
+  ndaBanner: {
+    display: "flex",
+    alignItems: "flex-start",
+    gap: 14,
+    padding: "18px 20px",
+    background: "rgba(108,99,255,0.08)",
+    border: "1px solid rgba(108,99,255,0.25)",
+    borderRadius: "var(--radius)",
+  },
+  linkBtn: {
+    background: "transparent",
+    border: "none",
+    color: "var(--accent)",
+    fontSize: 13,
+    fontWeight: 600,
+    whiteSpace: "nowrap",
+    padding: 0,
+    cursor: "pointer",
+    flexShrink: 0,
+  },
+  featureGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(2, 1fr)",
+    gap: 12,
+  },
+  featureCard: {
+    background: "var(--surface)",
+    border: "1px solid var(--border2)",
+    borderRadius: "var(--radius)",
+    padding: "20px",
+  },
+  featureIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    background: "var(--surface2)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 10,
+    color: "var(--accent)",
+  },
+  featureTitle: {
+    fontWeight: 700,
+    fontSize: 14,
+    marginBottom: 6,
+  },
+  featureDesc: {
+    fontSize: 12,
+    color: "var(--text-muted)",
+    lineHeight: 1.6,
+  },
+
+  /* ── NDA modal ── */
+  modalOverlay: {
+    position: "fixed",
+    inset: 0,
+    background: "rgba(0,0,0,0.7)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 1000,
+    padding: 16,
+    backdropFilter: "blur(4px)",
+  },
+  modalContent: {
+    width: "100%",
+    maxWidth: 560,
+    background: "var(--surface)",
+    borderRadius: "var(--radius)",
+    border: "1px solid var(--border2)",
+    boxShadow: "var(--shadow-lg)",
+  },
+  ndaModal: {
+    padding: "28px",
+    display: "flex",
+    flexDirection: "column",
+    gap: 14,
+  },
+  ndaHeader: {
+    display: "flex",
+    alignItems: "center",
+    gap: 12,
+  },
+  ndaFooter: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+    paddingTop: 12,
+    borderTop: "1px solid var(--border)",
+  },
+  ndaSignature: {
+    fontSize: 13,
+    color: "var(--text-muted)",
   },
 };
