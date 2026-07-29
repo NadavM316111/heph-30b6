@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Confi — Confidential Messaging",
-  description: "Secure, legally-binding confidential messaging with NDA protection",
+  description: "Secure messaging with legally-enforceable NDA protection. Your identity is verified and your conversations are protected by international law.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
