@@ -1,104 +1,99 @@
 import { NextRequest, NextResponse } from "next/server";
 import { q, ensure, hasDb } from "@/lib/db";
 
+// Ensure the identity table exists
+async function ensureTable() {
+  await ensure(`
+    CREATE TABLE IF NOT EXISTS confi_verified_identities (
+      id            SERIAL PRIMARY KEY,
+      identity_id   TEXT NOT NULL UNIQUE,
+      email         TEXT NOT NULL UNIQUE,
+      display_name  TEXT,
+      phone         TEXT,
+      avatar        TEXT,
+      email_verified BOOLEAN DEFAULT FALSE,
+      phone_verified BOOLEAN DEFAULT FALSE,
+      created_at    TIMESTAMPTZ DEFAULT NOW(),
+      updated_at    TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+}
+
 export async function POST(req: NextRequest) {
+  if (!hasDb()) {
+    return NextResponse.json({ ok: true, mock: true });
+  }
   try {
+    await ensureTable();
     const body = await req.json();
     const {
-      email,
-      legalName,
-      fingerprint,
-      tosAcceptedAt,
-      deviceMeta,
-      phone,
-    } = body;
+      identityId, email, displayName, phone, avatar,
+      emailVerified, phoneVerified,
+    } = body as {
+      identityId: string;
+      email: string;
+      displayName: string;
+      phone?: string;
+      avatar?: string;
+      emailVerified?: boolean;
+      phoneVerified?: boolean;
+    };
 
-    if (!email || !fingerprint) {
-      return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
+    if (!identityId || !email) {
+      return NextResponse.json({ error: "identityId and email required" }, { status: 400 });
     }
 
-    if (!hasDb()) {
-      // No DB — return success with in-memory ack
-      return NextResponse.json({ ok: true, stored: false, fingerprint });
-    }
-
-    await ensure();
-
-    // Create identity_records table if not exists
     await q(
-      `CREATE TABLE IF NOT EXISTS confi_identity_records (
-        id SERIAL PRIMARY KEY,
-        email TEXT NOT NULL,
-        legal_name TEXT,
-        phone TEXT,
-        fingerprint TEXT NOT NULL UNIQUE,
-        tos_accepted_at TIMESTAMPTZ,
-        device_meta JSONB,
-        created_at TIMESTAMPTZ DEFAULT NOW()
-      )`,
-      []
+      `INSERT INTO confi_verified_identities
+         (identity_id, email, display_name, phone, avatar, email_verified, phone_verified)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (email) DO UPDATE SET
+         display_name   = EXCLUDED.display_name,
+         phone          = EXCLUDED.phone,
+         avatar         = EXCLUDED.avatar,
+         email_verified = EXCLUDED.email_verified,
+         phone_verified = EXCLUDED.phone_verified,
+         updated_at     = NOW()`,
+      [identityId, email, displayName, phone ?? null, avatar ?? null,
+       emailVerified ?? false, phoneVerified ?? false]
     );
 
-    // Upsert identity record
-    await q(
-      `INSERT INTO confi_identity_records
-        (email, legal_name, phone, fingerprint, tos_accepted_at, device_meta)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT (fingerprint) DO UPDATE SET
-         email = EXCLUDED.email,
-         legal_name = EXCLUDED.legal_name,
-         tos_accepted_at = EXCLUDED.tos_accepted_at,
-         device_meta = EXCLUDED.device_meta`,
-      [
-        email,
-        legalName ?? null,
-        phone ?? null,
-        fingerprint,
-        tosAcceptedAt ?? null,
-        deviceMeta ? JSON.stringify(deviceMeta) : null,
-      ]
-    );
-
-    return NextResponse.json({ ok: true, stored: true, fingerprint });
+    return NextResponse.json({ ok: true });
   } catch (err) {
-    console.error("[identity] error:", err);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    console.error("identity upsert error:", err);
+    return NextResponse.json({ error: "Database error" }, { status: 500 });
   }
 }
 
 export async function GET(req: NextRequest) {
+  if (!hasDb()) {
+    return NextResponse.json({ ok: true, mock: true, identities: [] });
+  }
   try {
+    await ensureTable();
     const { searchParams } = new URL(req.url);
     const email = searchParams.get("email");
-    const fingerprint = searchParams.get("fingerprint");
 
-    if (!email && !fingerprint) {
-      return NextResponse.json({ error: "Provide email or fingerprint" }, { status: 400 });
+    if (!email) {
+      return NextResponse.json({ error: "email param required" }, { status: 400 });
     }
 
-    if (!hasDb()) {
-      return NextResponse.json({ ok: true, record: null, stored: false });
+    const rows = await q(
+      `SELECT identity_id, email, display_name, phone, avatar,
+              email_verified, phone_verified, created_at
+       FROM confi_verified_identities
+       WHERE email = $1`,
+      [email]
+    );
+
+    if (!rows || (rows as unknown[]).length === 0) {
+      return NextResponse.json({ found: false });
     }
 
-    await ensure();
-
-    let rows;
-    if (fingerprint) {
-      rows = await q(
-        `SELECT * FROM confi_identity_records WHERE fingerprint = $1 LIMIT 1`,
-        [fingerprint]
-      );
-    } else {
-      rows = await q(
-        `SELECT * FROM confi_identity_records WHERE email = $1 ORDER BY created_at DESC LIMIT 1`,
-        [email]
-      );
-    }
-
-    const record = Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
-    return NextResponse.json({ ok: true, record });
+    const row = (rows as Record<string, unknown>[])[0];
+    return NextResponse.json({ found: true, identity: row });
   } catch (err) {
-    console.error("[identity GET] error:", err);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    console.error("identity fetch error:", err);
+    return NextResponse.json({ error: "Database error" }, { status: 500 });
   }
 }
