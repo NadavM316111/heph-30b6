@@ -1,90 +1,122 @@
 import { NextRequest, NextResponse } from "next/server";
 import { q, ensure, hasDb } from "@/lib/db";
 
-async function initTable() {
+async function ensureNDATable() {
   await ensure(`
     CREATE TABLE IF NOT EXISTS confi_nda_signatures (
-      id SERIAL PRIMARY KEY,
+      id            SERIAL PRIMARY KEY,
+      signature_uid TEXT UNIQUE NOT NULL,
+      user_uid      TEXT NOT NULL,
+      crypto_id     TEXT NOT NULL,
       conversation_id TEXT NOT NULL,
-      signer_confi_id TEXT NOT NULL,
-      signer_phone TEXT NOT NULL,
-      signer_display_name TEXT NOT NULL,
-      ip_address TEXT,
-      user_agent TEXT,
-      signed_at TIMESTAMPTZ DEFAULT NOW(),
-      nda_version TEXT DEFAULT '1.0',
-      UNIQUE(conversation_id, signer_confi_id)
+      participant_ids TEXT[] NOT NULL,
+      accepted_at   TIMESTAMPTZ DEFAULT NOW(),
+      ip_hash       TEXT,
+      jurisdiction  TEXT DEFAULT 'international',
+      nda_version   TEXT DEFAULT '1.0',
+      expires_at    TIMESTAMPTZ
     )
   `);
 }
 
 export async function POST(req: NextRequest) {
   if (!hasDb()) {
-    return NextResponse.json({ error: "Database not configured" }, { status: 503 });
+    return NextResponse.json(
+      { error: "Database not configured" },
+      { status: 503 }
+    );
   }
 
   try {
-    await initTable();
+    await ensureNDATable();
     const body = await req.json();
-    const { conversationId, signerConfiId, signerPhone, signerDisplayName } = body;
+    const { userUid, cryptoId, conversationId, participantIds, jurisdiction } =
+      body;
 
-    if (!conversationId || !signerConfiId || !signerPhone || !signerDisplayName) {
-      return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
+    if (!userUid || !cryptoId || !conversationId) {
+      return NextResponse.json(
+        { error: "Missing required fields" },
+        { status: 400 }
+      );
     }
 
-    const ip = req.headers.get("x-forwarded-for") ?? req.headers.get("x-real-ip") ?? "unknown";
-    const ua = req.headers.get("user-agent") ?? "unknown";
+    // Generate a signature UID
+    const sigUid = `SIG-${Date.now().toString(36).toUpperCase()}-${Math.random()
+      .toString(36)
+      .slice(2, 10)
+      .toUpperCase()}`;
 
-    // Upsert signature
-    await q(
+    // NDA expires in 5 years
+    const expiresAt = new Date();
+    expiresAt.setFullYear(expiresAt.getFullYear() + 5);
+
+    const result = await q(
       `INSERT INTO confi_nda_signatures
-        (conversation_id, signer_confi_id, signer_phone, signer_display_name, ip_address, user_agent)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT (conversation_id, signer_confi_id) DO UPDATE SET signed_at = NOW()`,
-      [conversationId, signerConfiId, signerPhone, signerDisplayName, ip, ua]
+         (signature_uid, user_uid, crypto_id, conversation_id, participant_ids, jurisdiction, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (signature_uid) DO NOTHING
+       RETURNING *`,
+      [
+        sigUid,
+        userUid,
+        cryptoId,
+        conversationId,
+        participantIds || [],
+        jurisdiction || "international",
+        expiresAt.toISOString(),
+      ]
     );
 
     return NextResponse.json({
       ok: true,
-      signatureId: `NDA-${conversationId}-${signerConfiId}-${Date.now()}`,
-      signedAt: new Date().toISOString(),
+      signature: result.rows[0] || { signature_uid: sigUid },
     });
   } catch (err) {
-    console.error("NDA signature error:", err);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
 
 export async function GET(req: NextRequest) {
   if (!hasDb()) {
-    return NextResponse.json({ error: "Database not configured" }, { status: 503 });
+    return NextResponse.json(
+      { error: "Database not configured" },
+      { status: 503 }
+    );
   }
 
   try {
-    await initTable();
+    await ensureNDATable();
     const { searchParams } = new URL(req.url);
+    const userUid = searchParams.get("userUid");
     const conversationId = searchParams.get("conversationId");
 
-    if (!conversationId) {
-      return NextResponse.json({ error: "conversationId required" }, { status: 400 });
+    if (!userUid) {
+      return NextResponse.json({ error: "userUid required" }, { status: 400 });
     }
 
-    const signatures = await q(
-      "SELECT * FROM confi_nda_signatures WHERE conversation_id = $1 ORDER BY signed_at ASC",
-      [conversationId]
-    );
+    let rows;
+    if (conversationId) {
+      const result = await q(
+        `SELECT * FROM confi_nda_signatures
+         WHERE user_uid = $1 AND conversation_id = $2
+         ORDER BY accepted_at DESC`,
+        [userUid, conversationId]
+      );
+      rows = result.rows;
+    } else {
+      const result = await q(
+        `SELECT * FROM confi_nda_signatures
+         WHERE user_uid = $1
+         ORDER BY accepted_at DESC`,
+        [userUid]
+      );
+      rows = result.rows;
+    }
 
-    return NextResponse.json({
-      conversationId,
-      signatures: signatures.map((s) => ({
-        signerConfiId: s.signer_confi_id,
-        signerDisplayName: s.signer_display_name,
-        signedAt: s.signed_at,
-        ndaVersion: s.nda_version,
-      })),
-    });
+    return NextResponse.json({ ok: true, signatures: rows });
   } catch (err) {
-    console.error("NDA GET error:", err);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }

@@ -4,10 +4,10 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "Confi — Confidential Messaging",
   description:
-    "Secure messaging with legally-binding confidentiality. Every conversation protected by international NDA.",
-  icons: {
-    icon: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔐</text></svg>",
-  },
+    "Secure messaging with legally-binding International NDA protection for confidential conversations.",
+  manifest: "/manifest.json",
+  themeColor: "#0f0f1a",
+  viewport: "width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover",
 };
 
 export default function RootLayout({
@@ -17,6 +17,12 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
+      <head>
+        <meta name="apple-mobile-web-app-capable" content="yes" />
+        <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+        <meta name="apple-mobile-web-app-title" content="Confi" />
+        <meta name="mobile-web-app-capable" content="yes" />
+      </head>
       <body>{children}</body>
     </html>
   );
