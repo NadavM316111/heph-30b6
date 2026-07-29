@@ -1,64 +1,58 @@
 import { NextRequest, NextResponse } from "next/server";
-import { q, P } from "@/lib/db";
-import { verifyAccessToken, signAccessToken, signRefreshToken } from "@/lib/auth-utils";
+import { q, ensure, hasDb } from "@/lib/db";
 
 export async function POST(req: NextRequest) {
   try {
-    const authHeader = req.headers.get("authorization");
-    const token = authHeader?.replace("Bearer ", "");
+    const { email, displayName, avatarColor, tempToken } = await req.json();
 
-    if (!token) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const payload = verifyAccessToken(token);
-    if (!payload) {
+    if (!email || !displayName) {
       return NextResponse.json(
-        { error: "Invalid or expired token" },
-        { status: 401 }
-      );
-    }
-
-    const { displayName, avatar } = await req.json();
-
-    if (!displayName || displayName.trim().length < 2) {
-      return NextResponse.json(
-        { error: "Display name must be at least 2 characters" },
+        { error: "Missing required fields" },
         { status: 400 }
       );
     }
 
-    await q(
-      `UPDATE ${P}users SET display_name = $1, avatar = $2, updated_at = NOW() WHERE id = $3`,
-      [displayName.trim(), avatar ?? "avatar1", payload.userId]
-    );
+    const token = Buffer.from(
+      `${email}:${Date.now()}:profile`
+    ).toString("base64");
 
-    // Issue fresh tokens with updated profile info
-    const newAccessToken = signAccessToken({
-      userId: payload.userId,
-      email: payload.email,
-      displayName: displayName.trim(),
-      legalNameVerified: payload.legalNameVerified,
-    });
-    const newRefreshToken = signRefreshToken({
-      userId: payload.userId,
-      email: payload.email,
-    });
+    if (hasDb()) {
+      await ensure();
+      try {
+        // Check if user exists
+        const existing = await q(
+          `SELECT id FROM confi_users WHERE email = $1 LIMIT 1`,
+          [email]
+        );
+        const rows = existing as Array<{ id: number }>;
 
-    await q(
-      `UPDATE ${P}users SET refresh_token = $1 WHERE id = $2`,
-      [newRefreshToken, payload.userId]
-    );
+        if (rows.length > 0) {
+          // Update existing
+          await q(
+            `UPDATE confi_users SET display_name = $1, avatar_color = $2, updated_at = NOW()
+             WHERE email = $3`,
+            [displayName, avatarColor || "#6c63ff", email]
+          );
+        } else {
+          // Insert new
+          await q(
+            `INSERT INTO confi_users 
+               (email, display_name, avatar_color, kyc_verified, created_at, updated_at)
+             VALUES ($1, $2, $3, false, NOW(), NOW())
+             ON CONFLICT (email) DO UPDATE 
+               SET display_name = EXCLUDED.display_name,
+                   avatar_color = EXCLUDED.avatar_color,
+                   updated_at = NOW()`,
+            [email, displayName, avatarColor || "#6c63ff"]
+          );
+        }
+      } catch (dbErr) {
+        console.error("Profile setup DB error:", dbErr);
+        // Non-fatal: continue
+      }
+    }
 
-    return NextResponse.json({
-      ok: true,
-      accessToken: newAccessToken,
-      refreshToken: newRefreshToken,
-      user: {
-        displayName: displayName.trim(),
-        avatar: avatar ?? "avatar1",
-      },
-    });
+    return NextResponse.json({ ok: true, token, tempToken });
   } catch (err) {
     console.error("Profile setup error:", err);
     return NextResponse.json({ error: "Profile setup failed" }, { status: 500 });

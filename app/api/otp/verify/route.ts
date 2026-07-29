@@ -1,71 +1,124 @@
 import { NextRequest, NextResponse } from "next/server";
 import { q, ensure, hasDb } from "@/lib/db";
 
-// Shared in-memory store reference (same module instance as send route in dev)
-// In production, always use DB.
+const otpStore = new Map<
+  string,
+  { code: string; expiresAt: number; attempts: number; lastSent: number }
+>();
+
+// Shared reference to the module-level map from send route
+// Since Next.js routes are separate modules, we use a global approach
 declare global {
   // eslint-disable-next-line no-var
-  var _confiOtpStore: Record<string, { otp: string; secret: string; expiresAt: Date }> | undefined;
+  var confiOtpStore: Map<
+    string,
+    { code: string; expiresAt: number; attempts: number; lastSent: number }
+  >;
+}
+
+if (!global.confiOtpStore) {
+  global.confiOtpStore = new Map();
 }
 
 export async function POST(req: NextRequest) {
   try {
-    const { phone, code } = await req.json();
+    const { phone, otp } = await req.json();
 
-    if (!phone || !code) {
-      return NextResponse.json({ error: "Phone and code are required" }, { status: 400 });
+    if (!phone || !otp) {
+      return NextResponse.json({ error: "Missing phone or OTP" }, { status: 400 });
     }
 
-    let storedOtp: string | null = null;
-    let storedSecret: string | null = null;
+    const normalized = phone.replace(/\s/g, "").replace(/[^\d+]/g, "");
+    const record = global.confiOtpStore.get(normalized);
 
+    if (!record) {
+      return NextResponse.json(
+        { error: "No OTP sent to this number. Request a new code." },
+        { status: 400 }
+      );
+    }
+
+    // Check expiry
+    if (Date.now() > record.expiresAt) {
+      global.confiOtpStore.delete(normalized);
+      return NextResponse.json({ error: "OTP expired. Request a new code." }, { status: 400 });
+    }
+
+    // Rate limit attempts
+    if (record.attempts >= 5) {
+      return NextResponse.json(
+        { error: "Too many failed attempts. Request a new OTP." },
+        { status: 429 }
+      );
+    }
+
+    if (record.code !== otp.trim()) {
+      record.attempts += 1;
+      global.confiOtpStore.set(normalized, record);
+      return NextResponse.json(
+        {
+          error: `Invalid OTP. ${5 - record.attempts} attempts remaining.`,
+        },
+        { status: 400 }
+      );
+    }
+
+    // Valid OTP — clear it
+    global.confiOtpStore.delete(normalized);
+
+    const phoneEmail = `phone_${normalized.replace("+", "")}@confi.app`;
+
+    // Check if user exists in DB
     if (hasDb()) {
       await ensure();
-      const rows = await q(
-        `SELECT code, secret, expires_at FROM confi_otp_codes WHERE phone = $1`,
-        [phone]
-      );
-      if (!rows || rows.length === 0) {
-        return NextResponse.json({ error: "No OTP found for this number. Please request a new code." }, { status: 400 });
-      }
-      const row = rows[0];
-      if (new Date(row.expires_at) < new Date()) {
-        return NextResponse.json({ error: "Code expired. Please request a new one." }, { status: 400 });
-      }
-      storedOtp = row.code;
-      storedSecret = row.secret;
-    } else {
-      // Dev fallback using global store
-      if (!global._confiOtpStore) global._confiOtpStore = {};
-      const entry = global._confiOtpStore[phone];
-      if (!entry) {
-        // Dev convenience: accept "123456" as universal test code
-        if (code === "123456") {
-          return NextResponse.json({ ok: true, secret: "dev_secret_123" });
+      try {
+        const existing = await q(
+          `SELECT id, email, display_name, avatar_color, kyc_verified 
+           FROM confi_users WHERE phone = $1 LIMIT 1`,
+          [normalized]
+        );
+        const rows = existing as Array<{
+          id: number;
+          email: string;
+          display_name: string;
+          avatar_color: string;
+          kyc_verified: boolean;
+        }>;
+
+        if (rows.length > 0) {
+          const user = rows[0];
+          const token = Buffer.from(
+            `${user.email}:${Date.now()}:verified`
+          ).toString("base64");
+          return NextResponse.json({
+            ok: true,
+            newUser: false,
+            email: user.email,
+            token,
+            userId: user.id,
+            displayName: user.display_name,
+            avatarColor: user.avatar_color,
+            kycVerified: user.kyc_verified,
+          });
         }
-        return NextResponse.json({ error: "No OTP found. Request a new code." }, { status: 400 });
+      } catch (dbErr) {
+        console.error("DB lookup error:", dbErr);
       }
-      if (entry.expiresAt < new Date()) {
-        return NextResponse.json({ error: "Code expired." }, { status: 400 });
-      }
-      storedOtp = entry.otp;
-      storedSecret = entry.secret;
     }
 
-    if (code !== storedOtp) {
-      return NextResponse.json({ error: "Incorrect code. Please try again." }, { status: 400 });
-    }
+    // New user
+    const tempToken = Buffer.from(
+      `${phoneEmail}:${Date.now()}:new`
+    ).toString("base64");
 
-    // Clean up used OTP
-    if (hasDb()) {
-      await q(`DELETE FROM confi_otp_codes WHERE phone = $1`, [phone]);
-    } else {
-      if (global._confiOtpStore) delete global._confiOtpStore[phone];
-    }
-
-    return NextResponse.json({ ok: true, secret: storedSecret });
-  } catch (err: unknown) {
-    console.error("[otp/verify]", err);
+    return NextResponse.json({
+      ok: true,
+      newUser: true,
+      email: phoneEmail,
+      tempToken,
+    });
+  } catch (err) {
+    console.error("OTP verify error:", err);
     return NextResponse.json({ error: "Verification failed" }, { status: 500 });
   }
 }

@@ -1,63 +1,73 @@
 import { NextRequest, NextResponse } from "next/server";
-import { q, ensure, hasDb } from "@/lib/db";
+import { ensure, hasDb } from "@/lib/db";
 
-// Generate a random 6-digit OTP
-function generateOtp(): string {
-  return Math.floor(100000 + Math.random() * 900000).toString();
+declare global {
+  // eslint-disable-next-line no-var
+  var confiOtpStore: Map<
+    string,
+    { code: string; expiresAt: number; attempts: number; lastSent: number }
+  >;
 }
 
-// A secret that makes the stored OTP usable as a password seed
-function generateSecret(): string {
-  return Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+if (!global.confiOtpStore) {
+  global.confiOtpStore = new Map();
 }
 
 export async function POST(req: NextRequest) {
   try {
     const { phone } = await req.json();
 
-    if (!phone || typeof phone !== "string" || phone.length < 7) {
+    if (!phone || typeof phone !== "string") {
       return NextResponse.json({ error: "Invalid phone number" }, { status: 400 });
     }
 
-    const otp = generateOtp();
-    const secret = generateSecret();
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+    const normalized = phone.replace(/\s/g, "").replace(/[^\d+]/g, "");
+    if (normalized.length < 7) {
+      return NextResponse.json({ error: "Phone number too short" }, { status: 400 });
+    }
+
+    // Rate limit: 1 OTP per 60 seconds
+    const existing = global.confiOtpStore.get(normalized);
+    if (existing && Date.now() - existing.lastSent < 60000) {
+      const waitSec = Math.ceil(
+        (60000 - (Date.now() - existing.lastSent)) / 1000
+      );
+      return NextResponse.json(
+        {
+          error: `Please wait ${waitSec} seconds before requesting another OTP`,
+        },
+        { status: 429 }
+      );
+    }
+
+    // Generate 6-digit OTP
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
+
+    global.confiOtpStore.set(normalized, {
+      code,
+      expiresAt,
+      attempts: 0,
+      lastSent: Date.now(),
+    });
+
+    // In production this would call an SMS gateway (Twilio, etc.)
+    // For demo, log to server console
+    console.log(
+      `[CONFI OTP] Phone: ${normalized} | Code: ${code} | Expires: ${new Date(expiresAt).toISOString()}`
+    );
 
     if (hasDb()) {
       await ensure();
-      // Upsert OTP record
-      await q(
-        `INSERT INTO confi_otp_codes (phone, code, secret, expires_at, created_at)
-         VALUES ($1, $2, $3, $4, NOW())
-         ON CONFLICT (phone) DO UPDATE
-         SET code = $2, secret = $3, expires_at = $4, created_at = NOW()`,
-        [phone, otp, secret, expiresAt.toISOString()]
-      );
-    } else {
-      // No DB — store in-memory (dev only, single-instance)
-      otpStore[phone] = { otp, secret, expiresAt };
     }
-
-    // In production, integrate Twilio here:
-    // await twilioClient.messages.create({ to: phone, from: TWILIO_FROM, body: `Your Confi code: ${otp}` });
-
-    // For dev/demo: log to console and return in response
-    console.log(`[Confi OTP] Phone: ${phone} | Code: ${otp} | Secret: ${secret}`);
 
     return NextResponse.json({
       ok: true,
       message: "OTP sent",
-      // Return OTP in dev mode (remove in production)
-      _dev_otp: process.env.NODE_ENV !== "production" ? otp : undefined,
+      ...(process.env.NODE_ENV === "development" ? { devCode: code } : {}),
     });
-  } catch (err: unknown) {
-    console.error("[otp/send]", err);
-    return NextResponse.json(
-      { error: "Failed to send OTP" },
-      { status: 500 }
-    );
+  } catch (err) {
+    console.error("OTP send error:", err);
+    return NextResponse.json({ error: "Failed to send OTP" }, { status: 500 });
   }
 }
-
-// In-memory fallback (dev, single-instance only)
-const otpStore: Record<string, { otp: string; secret: string; expiresAt: Date }> = {};
