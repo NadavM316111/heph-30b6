@@ -1,103 +1,50 @@
-*,
-*::before,
-*::after {
+*, *::before, *::after {
   box-sizing: border-box;
   margin: 0;
   padding: 0;
 }
 
-html,
-body {
+html, body {
   height: 100%;
-  width: 100%;
-  font-family: 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-  -webkit-font-smoothing: antialiased;
-  background: #0f0c29;
-  color: #fff;
-  overscroll-behavior: none;
+  overflow: hidden;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  background: #0d0d1a;
+  color: #ffffff;
 }
 
-/* Scrollbar */
+#__next, main {
+  height: 100%;
+}
+
 ::-webkit-scrollbar {
   width: 6px;
 }
+
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.2);
+  background: #333;
   border-radius: 3px;
 }
 
-/* Input placeholder */
-::placeholder {
-  color: rgba(255, 255, 255, 0.35);
+::-webkit-scrollbar-thumb:hover {
+  background: #555;
 }
 
-/* Input autofill override */
-input:-webkit-autofill,
-input:-webkit-autofill:hover,
-input:-webkit-autofill:focus {
-  -webkit-text-fill-color: #fff;
-  -webkit-box-shadow: 0 0 0 1000px rgba(255, 255, 255, 0.08) inset;
-  transition: background-color 5000s ease-in-out 0s;
-  caret-color: #fff;
+button:hover {
+  opacity: 0.9;
 }
 
-/* Focus ring */
+button:active {
+  transform: scale(0.97);
+}
+
+input::placeholder {
+  color: #666;
+}
+
 input:focus {
-  border-color: rgba(108, 99, 255, 0.7) !important;
-  box-shadow: 0 0 0 3px rgba(108, 99, 255, 0.2);
-}
-
-/* Button hover */
-button:hover:not(:disabled) {
-  opacity: 0.88;
-  transform: translateY(-1px);
-}
-button:active:not(:disabled) {
-  transform: translateY(0);
-}
-
-/* Pulse animation for splash dots */
-@keyframes pulse {
-  0%, 100% { opacity: 0.3; transform: scale(0.8); }
-  50%       { opacity: 1;   transform: scale(1.2); }
-}
-
-/* Fade in */
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(12px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-
-/* Slide up */
-@keyframes slideUp {
-  from { opacity: 0; transform: translateY(32px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-
-/* Apply entrance animation to cards */
-div[style] {
-  animation: fadeIn 0.35s ease both;
-}
-
-/* Remove number input spinners */
-input[type='number']::-webkit-inner-spin-button,
-input[type='number']::-webkit-outer-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
-}
-
-/* Mobile tap highlight */
-* {
-  -webkit-tap-highlight-color: transparent;
-}
-
-/* Responsive max-width centering */
-#__next,
-main {
-  min-height: 100vh;
-  display: flex;
-  flex-direction: column;
+  border-color: #6c63ff !important;
 }
