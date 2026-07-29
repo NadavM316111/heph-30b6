@@ -1,12 +1,21 @@
-*, *::before, *::after {
+*,
+*::before,
+*::after {
   box-sizing: border-box;
   margin: 0;
   padding: 0;
 }
 
-html, body {
+html,
+body {
   height: 100%;
+  width: 100%;
+}
+
+body {
   font-family: 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  background-color: #f0f2f5;
+  color: #1a1a1a;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -20,14 +29,38 @@ button:not(:disabled):hover {
   opacity: 0.9;
 }
 
-input:focus {
-  border-color: #0f3460 !important;
-  box-shadow: 0 0 0 3px rgba(15, 52, 96, 0.1);
+input:focus,
+select:focus {
+  border-color: #128C7E !important;
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(18, 140, 126, 0.12);
 }
 
-select:focus {
-  border-color: #0f3460 !important;
-  outline: none;
+@keyframes slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  50% {
+    transform: translateX(200%);
+  }
+  100% {
+    transform: translateX(200%);
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.fade-in {
+  animation: fadeIn 0.35s ease both;
 }
 
 ::-webkit-scrollbar {
@@ -35,10 +68,14 @@ select:focus {
 }
 
 ::-webkit-scrollbar-track {
-  background: #f1f1f1;
+  background: #f0f2f5;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #c1c1c1;
+  background: #128C7E;
   border-radius: 3px;
+}
+
+::selection {
+  background: rgba(18, 140, 126, 0.2);
 }

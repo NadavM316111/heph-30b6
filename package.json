@@ -1,6 +1,6 @@
 {
-  "name": "confi-messaging",
-  "version": "0.1.0",
+  "name": "confi-messaging-app",
+  "version": "1.0.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -11,15 +11,13 @@
   "dependencies": {
     "@neondatabase/serverless": "^0.9.0",
     "next": "14.2.5",
-    "react": "^18",
-    "react-dom": "^18"
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
     "@types/node": "^20",
     "@types/react": "^18",
     "@types/react-dom": "^18",
-    "eslint": "^8",
-    "eslint-config-next": "14.2.5",
     "typescript": "^5"
   }
 }
