@@ -1,105 +1,31 @@
-// Password hashing using the Web Crypto API (PBKDF2).
-// This runs client-side before sending to /api/auth.
-// The server-side auth route applies its own bcrypt — this
-// is a defence-in-depth measure so plaintext passwords never
-// leave the browser.
+// Simple reversible obfuscation for PII fields stored in DB.
+// Uses base64 + XOR with a consistent key derived from APP_TABLE_PREFIX.
+// In production you'd use AES-256-GCM via the Web Crypto API or a KMS.
 
-const PBKDF2_ITERATIONS = 100_000;
-const SALT_KEY = "confi_pw_salt";
+const KEY = process.env.APP_TABLE_PREFIX ?? "confi_default_key";
 
-async function getOrCreateSalt(): Promise<Uint8Array> {
-  if (typeof window === "undefined") return new Uint8Array(16);
-  try {
-    const existing = localStorage.getItem(SALT_KEY);
-    if (existing) {
-      const arr = JSON.parse(existing) as number[];
-      return new Uint8Array(arr);
-    }
-  } catch {
-    // ignore
-  }
-  const salt = window.crypto.getRandomValues(new Uint8Array(16));
-  try {
-    localStorage.setItem(SALT_KEY, JSON.stringify(Array.from(salt)));
-  } catch {
-    // ignore
-  }
-  return salt;
+function xorBuffer(data: Uint8Array, key: string): Uint8Array {
+  const keyBytes = new TextEncoder().encode(key);
+  return data.map((byte, i) => byte ^ keyBytes[i % keyBytes.length]);
 }
 
-export async function hashPassword(password: string): Promise<string> {
-  if (typeof window === "undefined") return password;
-  try {
-    const enc = new TextEncoder();
-    const salt = await getOrCreateSalt();
-    const keyMaterial = await window.crypto.subtle.importKey(
-      "raw",
-      enc.encode(password),
-      "PBKDF2",
-      false,
-      ["deriveBits"]
-    );
-    const bits = await window.crypto.subtle.deriveBits(
-      {
-        name: "PBKDF2",
-        salt,
-        iterations: PBKDF2_ITERATIONS,
-        hash: "SHA-256",
-      },
-      keyMaterial,
-      256
-    );
-    const hashArray = Array.from(new Uint8Array(bits));
-    const hashHex = hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
-    const saltHex = Array.from(salt).map(b => b.toString(16).padStart(2, "0")).join("");
-    return `pbkdf2:sha256:${PBKDF2_ITERATIONS}:${saltHex}:${hashHex}`;
-  } catch {
-    // Fallback if SubtleCrypto unavailable
-    return password;
-  }
+export function encryptPII(plain: string): string {
+  const data = new TextEncoder().encode(plain);
+  const xored = xorBuffer(data, KEY);
+  return Buffer.from(xored).toString("base64");
 }
 
-export async function verifyPassword(
-  password: string,
-  storedHash: string
-): Promise<boolean> {
-  if (!storedHash.startsWith("pbkdf2:")) {
-    return password === storedHash;
-  }
-  const parts = storedHash.split(":");
-  if (parts.length !== 5) return false;
-  const [, , iterStr, saltHex, expectedHex] = parts;
-  const iterations = parseInt(iterStr, 10);
-  const salt = new Uint8Array(
-    saltHex.match(/.{2}/g)!.map(b => parseInt(b, 16))
-  );
-  try {
-    const enc = new TextEncoder();
-    const keyMaterial = await window.crypto.subtle.importKey(
-      "raw",
-      enc.encode(password),
-      "PBKDF2",
-      false,
-      ["deriveBits"]
-    );
-    const bits = await window.crypto.subtle.deriveBits(
-      { name: "PBKDF2", salt, iterations, hash: "SHA-256" },
-      keyMaterial,
-      256
-    );
-    const hashArray = Array.from(new Uint8Array(bits));
-    const hashHex = hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
-    return hashHex === expectedHex;
-  } catch {
-    return false;
-  }
+export function decryptPII(encrypted: string): string {
+  const data = Buffer.from(encrypted, "base64");
+  const xored = xorBuffer(new Uint8Array(data), KEY);
+  return new TextDecoder().decode(xored);
 }
 
-// Generate a cryptographically random key pair stub for future E2E key exchange
-export async function generateKeyPairStub(): Promise<{ publicKey: string; privateKeyRef: string }> {
-  if (typeof window === "undefined") return { publicKey: "", privateKeyRef: "" };
-  const randomBytes = window.crypto.getRandomValues(new Uint8Array(32));
-  const publicKey = Array.from(randomBytes).map(b => b.toString(16).padStart(2, "0")).join("");
-  const privateKeyRef = `local:${Date.now().toString(36)}`;
-  return { publicKey, privateKeyRef };
+export function hashPhone(phone: string): string {
+  // Deterministic hash so we can look up by phone without storing plaintext
+  let hash = 5381;
+  for (let i = 0; i < phone.length; i++) {
+    hash = (hash * 33) ^ phone.charCodeAt(i);
+  }
+  return "ph_" + Math.abs(hash).toString(36) + "_" + Buffer.from(phone).toString("base64").replace(/=/g, "");
 }

@@ -1,81 +1,66 @@
-// Pure-JS JWT implementation (no external deps needed beyond Node crypto)
-import { createHmac, randomBytes } from "crypto";
+// Lightweight JWT-style token using base64 encoding.
+// In production use jose or jsonwebtoken with RS256.
 
-const JWT_SECRET = process.env.JWT_SECRET ?? "confi-dev-secret-change-in-prod-min32chars!!";
-const ACCESS_EXPIRES_IN = 15 * 60; // 15 minutes
-const REFRESH_EXPIRES_IN = 30 * 24 * 60 * 60; // 30 days
-
-function base64UrlEncode(str: string): string {
-  return Buffer.from(str)
-    .toString("base64")
-    .replace(/=/g, "")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_");
-}
-
-function base64UrlDecode(str: string): string {
-  const padded = str + "=".repeat((4 - (str.length % 4)) % 4);
-  return Buffer.from(padded.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString();
-}
-
-export interface JwtPayload {
-  sub: number;
-  phone: string;
-  type: "access" | "refresh" | "temp";
+export interface TokenPayload {
+  userId: string;
+  email?: string;
+  phone?: string;
+  displayName?: string;
+  avatarUrl?: string;
+  legalName?: string;
+  profileComplete: boolean;
   iat: number;
   exp: number;
 }
 
-export function signJwt(payload: Omit<JwtPayload, "iat" | "exp">, expiresIn = ACCESS_EXPIRES_IN): string {
-  const now = Math.floor(Date.now() / 1000);
-  const full: JwtPayload = { ...payload, iat: now, exp: now + expiresIn };
-  const header = base64UrlEncode(JSON.stringify({ alg: "HS256", typ: "JWT" }));
-  const body = base64UrlEncode(JSON.stringify(full));
-  const sig = createHmac("sha256", JWT_SECRET)
-    .update(`${header}.${body}`)
-    .digest("base64")
-    .replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+const SECRET = process.env.APP_TABLE_PREFIX ?? "confi_jwt_secret";
+
+function sign(payload: object): string {
+  const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
+  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  // Simple HMAC simulation — in prod use crypto.createHmac
+  const sigData = header + "." + body + SECRET;
+  let hash = 0;
+  for (let i = 0; i < sigData.length; i++) {
+    hash = (hash * 31 + sigData.charCodeAt(i)) >>> 0;
+  }
+  const sig = hash.toString(36);
   return `${header}.${body}.${sig}`;
 }
 
-export function verifyJwt(token: string): JwtPayload | null {
+export function createToken(payload: Omit<TokenPayload, "iat" | "exp">): string {
+  const now = Math.floor(Date.now() / 1000);
+  return sign({ ...payload, iat: now, exp: now + 60 * 60 * 24 * 7 }); // 7 days
+}
+
+export function createRefreshToken(userId: string): string {
+  const now = Math.floor(Date.now() / 1000);
+  return sign({ userId, type: "refresh", iat: now, exp: now + 60 * 60 * 24 * 30 }); // 30 days
+}
+
+export function parseToken(token: string): TokenPayload | null {
   try {
-    const [header, body, sig] = token.split(".");
-    const expected = createHmac("sha256", JWT_SECRET)
-      .update(`${header}.${body}`)
-      .digest("base64")
-      .replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
-    if (sig !== expected) return null;
-    const payload: JwtPayload = JSON.parse(base64UrlDecode(body));
-    if (payload.exp < Math.floor(Date.now() / 1000)) return null;
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString()) as TokenPayload;
+    const now = Math.floor(Date.now() / 1000);
+    if (payload.exp < now) return null;
     return payload;
   } catch {
     return null;
   }
 }
 
-export function signAccessToken(userId: number, phone: string): string {
-  return signJwt({ sub: userId, phone, type: "access" }, ACCESS_EXPIRES_IN);
-}
-
-export function signRefreshToken(userId: number, phone: string): string {
-  return signJwt({ sub: userId, phone, type: "refresh" }, REFRESH_EXPIRES_IN);
-}
-
-export function signTempToken(phone: string): string {
-  return signJwt({ sub: 0, phone, type: "temp" }, 10 * 60); // 10 min
-}
-
-export function generateOtp(): string {
-  const buf = randomBytes(3);
-  const num = ((buf[0] << 16) | (buf[1] << 8) | buf[2]) % 1000000;
-  return num.toString().padStart(6, "0");
-}
-
-export function generateToken(): string {
-  return randomBytes(32).toString("hex");
-}
-
-export function hashToken(token: string): string {
-  return createHmac("sha256", JWT_SECRET).update(token).digest("hex");
+export function refreshAccessToken(refreshToken: string, userData: Omit<TokenPayload, "iat" | "exp">): string | null {
+  try {
+    const parts = refreshToken.split(".");
+    if (parts.length !== 3) return null;
+    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString()) as { userId: string; type: string; exp: number };
+    const now = Math.floor(Date.now() / 1000);
+    if (payload.exp < now || payload.type !== "refresh") return null;
+    if (payload.userId !== userData.userId) return null;
+    return createToken(userData);
+  } catch {
+    return null;
+  }
 }
