@@ -1,75 +1,103 @@
-*, *::before, *::after {
+*,
+*::before,
+*::after {
   box-sizing: border-box;
   margin: 0;
   padding: 0;
 }
 
-html, body {
+html,
+body {
   height: 100%;
   width: 100%;
-}
-
-body {
-  background: #0f0c29;
-  color: #fff;
   font-family: 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+  background: #0f0c29;
+  color: #fff;
+  overscroll-behavior: none;
 }
 
-input:-webkit-autofill,
-input:-webkit-autofill:hover,
-input:-webkit-autofill:focus {
-  -webkit-box-shadow: 0 0 0px 1000px rgba(255,255,255,0.08) inset;
-  -webkit-text-fill-color: #fff;
-  transition: background-color 5000s ease-in-out 0s;
-}
-
-input::placeholder {
-  color: rgba(255, 255, 255, 0.3);
-}
-
-input:focus {
-  border-color: rgba(124, 58, 237, 0.7) !important;
-  box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.15);
-}
-
-button:hover {
-  opacity: 0.88;
-}
-
-button:active {
-  transform: scale(0.97);
-}
-
-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
+/* Scrollbar */
 ::-webkit-scrollbar {
   width: 6px;
 }
-
 ::-webkit-scrollbar-track {
-  background: rgba(255,255,255,0.05);
+  background: transparent;
 }
-
 ::-webkit-scrollbar-thumb {
-  background: rgba(124,58,237,0.4);
+  background: rgba(255, 255, 255, 0.2);
   border-radius: 3px;
 }
 
+/* Input placeholder */
+::placeholder {
+  color: rgba(255, 255, 255, 0.35);
+}
+
+/* Input autofill override */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  -webkit-text-fill-color: #fff;
+  -webkit-box-shadow: 0 0 0 1000px rgba(255, 255, 255, 0.08) inset;
+  transition: background-color 5000s ease-in-out 0s;
+  caret-color: #fff;
+}
+
+/* Focus ring */
+input:focus {
+  border-color: rgba(108, 99, 255, 0.7) !important;
+  box-shadow: 0 0 0 3px rgba(108, 99, 255, 0.2);
+}
+
+/* Button hover */
+button:hover:not(:disabled) {
+  opacity: 0.88;
+  transform: translateY(-1px);
+}
+button:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+/* Pulse animation for splash dots */
 @keyframes pulse {
-  0%, 100% { transform: scale(1); opacity: 1; }
-  50% { transform: scale(1.06); opacity: 0.85; }
+  0%, 100% { opacity: 0.3; transform: scale(0.8); }
+  50%       { opacity: 1;   transform: scale(1.2); }
 }
 
+/* Fade in */
 @keyframes fadeIn {
-  from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
-.card-enter {
-  animation: fadeIn 0.3s ease forwards;
+/* Slide up */
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(32px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Apply entrance animation to cards */
+div[style] {
+  animation: fadeIn 0.35s ease both;
+}
+
+/* Remove number input spinners */
+input[type='number']::-webkit-inner-spin-button,
+input[type='number']::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* Mobile tap highlight */
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Responsive max-width centering */
+#__next,
+main {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
 }
