@@ -1,51 +1,87 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useState, useEffect, useRef } from "react";
 
-type Stage =
+type Screen =
   | "landing"
-  | "register-phone"
-  | "register-otp"
-  | "register-email"
-  | "register-profile"
-  | "login-phone"
-  | "login-otp"
-  | "login-email"
-  | "login-password"
-  | "recovery"
-  | "recovery-otp"
-  | "recovery-reset"
-  | "home";
+  | "register"
+  | "login"
+  | "otp"
+  | "profile-setup"
+  | "dashboard"
+  | "recover";
 
-interface UserProfile {
+interface User {
   email: string;
-  phone?: string;
   displayName?: string;
-  handle?: string;
-  avatarUrl?: string;
+  avatar?: string;
+  phone?: string;
 }
 
-export default function Home() {
-  const [stage, setStage] = useState<Stage>("landing");
-  const [user, setUser] = useState<UserProfile | null>(null);
-  const [phone, setPhone] = useState("");
+interface Session {
+  user: User;
+  token: string;
+  createdAt: number;
+}
+
+const OTP_LENGTH = 6;
+const SESSION_KEY = "confi_session";
+const PROFILE_KEY = "confi_profile";
+
+function generateOTP(): string {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
+
+function generateJWT(email: string): string {
+  const header = btoa(JSON.stringify({ alg: "HS256", typ: "JWT" }));
+  const payload = btoa(
+    JSON.stringify({ sub: email, iat: Date.now(), exp: Date.now() + 86400000 * 7 })
+  );
+  const sig = btoa(`confi_sig_${email}_${Date.now()}`);
+  return `${header}.${payload}.${sig}`;
+}
+
+function parseJWTPayload(token: string): { sub: string; exp: number } | null {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    return JSON.parse(atob(parts[1]));
+  } catch {
+    return null;
+  }
+}
+
+function isSessionValid(session: Session): boolean {
+  const payload = parseJWTPayload(session.token);
+  if (!payload) return false;
+  return payload.exp > Date.now();
+}
+
+export default function ConfiApp() {
+  const [screen, setScreen] = useState<Screen>("landing");
   const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
-  const [otp, setOtp] = useState("");
-  const [otpSent, setOtpSent] = useState(false);
-  const [serverOtp, setServerOtp] = useState(""); // dev-only: shown in UI
-  const [displayName, setDisplayName] = useState("");
-  const [handle, setHandle] = useState("");
-  const [avatarPreview, setAvatarPreview] = useState("");
-  const [avatarBase64, setAvatarBase64] = useState("");
+  const [otpInput, setOtpInput] = useState(["", "", "", "", "", ""]);
+  const [generatedOTP, setGeneratedOTP] = useState("");
+  const [otpTimer, setOtpTimer] = useState(60);
+  const [otpMode, setOtpMode] = useState<"register" | "login" | "recover">("register");
   const [error, setError] = useState("");
-  const [info, setInfo] = useState("");
+  const [success, setSuccess] = useState("");
   const [loading, setLoading] = useState(false);
-  const [handleAvailable, setHandleAvailable] = useState<boolean | null>(null);
-  const [checkingHandle, setCheckingHandle] = useState(false);
+  const [session, setSession] = useState<Session | null>(null);
+  const [displayName, setDisplayName] = useState("");
+  const [avatar, setAvatar] = useState<string>("");
+  const [avatarPreview, setAvatarPreview] = useState<string>("");
+  const [registerMode, setRegisterMode] = useState<"email" | "phone">("email");
+  const [showPassword, setShowPassword] = useState(false);
+  const [recoverEmail, setRecoverEmail] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [recoveryStep, setRecoveryStep] = useState<"email" | "otp" | "reset">("email");
+  const otpRefs = useRef<(HTMLInputElement | null)[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const handleDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     fetch("/api/track", {
@@ -54,259 +90,110 @@ export default function Home() {
       body: JSON.stringify({ path: window.location.pathname }),
     }).catch(() => {});
 
-    const saved = localStorage.getItem("confi_user");
-    if (saved) {
+    const stored = localStorage.getItem(SESSION_KEY);
+    if (stored) {
       try {
-        const parsed = JSON.parse(saved);
-        setUser(parsed);
-        setStage("home");
-      } catch {}
+        const parsed: Session = JSON.parse(stored);
+        if (isSessionValid(parsed)) {
+          setSession(parsed);
+          const profile = localStorage.getItem(PROFILE_KEY + "_" + parsed.user.email);
+          if (profile) {
+            const p = JSON.parse(profile);
+            parsed.user.displayName = p.displayName;
+            parsed.user.avatar = p.avatar;
+            parsed.user.phone = p.phone;
+            setSession({ ...parsed });
+          }
+          setScreen("dashboard");
+        } else {
+          localStorage.removeItem(SESSION_KEY);
+        }
+      } catch {
+        localStorage.removeItem(SESSION_KEY);
+      }
     }
   }, []);
 
-  function clearErrors() {
-    setError("");
-    setInfo("");
-  }
-
-  function logout() {
-    localStorage.removeItem("confi_user");
-    localStorage.removeItem("confi_session");
-    setUser(null);
-    setStage("landing");
-    setPhone("");
-    setEmail("");
-    setPassword("");
-    setOtp("");
-    setDisplayName("");
-    setHandle("");
-    setAvatarPreview("");
-    setAvatarBase64("");
-    setServerOtp("");
-    clearErrors();
-  }
-
-  async function sendOtp(targetPhone: string) {
-    setLoading(true);
-    clearErrors();
-    try {
-      const res = await fetch("/api/otp/send", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone: targetPhone }),
-      });
-      const data = await res.json();
-      if (data.ok) {
-        setOtpSent(true);
-        if (data.devOtp) {
-          setServerOtp(data.devOtp);
-          setInfo(`Dev mode — OTP: ${data.devOtp}`);
-        } else {
-          setInfo("OTP sent to " + targetPhone);
-        }
-      } else {
-        setError(data.error || "Failed to send OTP");
-      }
-    } catch {
-      setError("Network error sending OTP");
+  useEffect(() => {
+    if (screen === "otp") {
+      setOtpTimer(60);
+      if (timerRef.current) clearInterval(timerRef.current);
+      timerRef.current = setInterval(() => {
+        setOtpTimer((t) => {
+          if (t <= 1) {
+            if (timerRef.current) clearInterval(timerRef.current);
+            return 0;
+          }
+          return t - 1;
+        });
+      }, 1000);
     }
-    setLoading(false);
-  }
-
-  async function verifyOtp(targetPhone: string, code: string): Promise<boolean> {
-    setLoading(true);
-    clearErrors();
-    try {
-      const res = await fetch("/api/otp/verify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone: targetPhone, otp: code }),
-      });
-      const data = await res.json();
-      setLoading(false);
-      if (data.ok) return true;
-      setError(data.error || "Invalid OTP");
-      return false;
-    } catch {
-      setError("Network error verifying OTP");
-      setLoading(false);
-      return false;
-    }
-  }
-
-  async function checkHandleAvailability(h: string) {
-    if (!h || h.length < 3) {
-      setHandleAvailable(null);
-      return;
-    }
-    setCheckingHandle(true);
-    try {
-      const res = await fetch(`/api/handle/check?handle=${encodeURIComponent(h)}`);
-      const data = await res.json();
-      setHandleAvailable(data.available);
-    } catch {
-      setHandleAvailable(null);
-    }
-    setCheckingHandle(false);
-  }
-
-  function onHandleChange(val: string) {
-    const clean = val.toLowerCase().replace(/[^a-z0-9_]/g, "");
-    setHandle(clean);
-    setHandleAvailable(null);
-    if (handleDebounceRef.current) clearTimeout(handleDebounceRef.current);
-    handleDebounceRef.current = setTimeout(() => checkHandleAvailability(clean), 600);
-  }
-
-  function onAvatarChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (file.size > 2 * 1024 * 1024) {
-      setError("Avatar must be under 2MB");
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const result = ev.target?.result as string;
-      setAvatarPreview(result);
-      setAvatarBase64(result);
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
     };
-    reader.readAsDataURL(file);
-  }
+  }, [screen]);
 
-  // ── REGISTER FLOW ──────────────────────────────────────────────────────────
+  const clearMessages = () => {
+    setError("");
+    setSuccess("");
+  };
 
-  async function handleRegisterPhoneNext() {
-    if (!phone.match(/^\+?[1-9]\d{7,14}$/)) {
-      setError("Enter a valid phone number with country code, e.g. +12125551234");
+  const handleRegister = async () => {
+    clearMessages();
+    if (!email && registerMode === "email") {
+      setError("Please enter your email address.");
       return;
     }
-    await sendOtp(phone);
-    if (!error) setStage("register-otp");
-  }
-
-  async function handleRegisterOtpNext() {
-    if (otp.length < 4) { setError("Enter the OTP"); return; }
-    const ok = await verifyOtp(phone, otp);
-    if (ok) {
-      setOtp("");
-      setStage("register-email");
+    if (!phone && registerMode === "phone") {
+      setError("Please enter your phone number.");
+      return;
     }
-  }
-
-  async function handleRegisterEmailNext() {
-    if (!email.includes("@")) { setError("Enter a valid email"); return; }
-    if (password.length < 8) { setError("Password must be at least 8 characters"); return; }
-    if (password !== confirmPassword) { setError("Passwords do not match"); return; }
+    if (password.length < 8) {
+      setError("Password must be at least 8 characters.");
+      return;
+    }
+    if (password !== confirmPassword) {
+      setError("Passwords do not match.");
+      return;
+    }
 
     setLoading(true);
-    clearErrors();
     try {
+      const identifier = registerMode === "email" ? email : `${phone}@phone.confi`;
       const res = await fetch("/api/auth", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: "signup", email, password }),
+        body: JSON.stringify({ mode: "signup", email: identifier, password }),
       });
       const data = await res.json();
       if (data.ok) {
-        setStage("register-profile");
+        const otp = generateOTP();
+        setGeneratedOTP(otp);
+        setOtpMode("register");
+        console.info(`[CONFI DEV] OTP for ${identifier}: ${otp}`);
+        setSuccess(`OTP sent to ${registerMode === "email" ? email : phone}. Check console for dev OTP.`);
+        setScreen("otp");
       } else {
-        setError(data.error || "Registration failed");
+        setError(data.error || "Registration failed. Try again.");
       }
     } catch {
-      setError("Network error");
-    }
-    setLoading(false);
-  }
-
-  async function handleRegisterProfileNext() {
-    if (!displayName.trim()) { setError("Display name is required"); return; }
-    if (!handle || handle.length < 3) { setError("Handle must be at least 3 characters"); return; }
-    if (handleAvailable === false) { setError("Handle is taken"); return; }
-
-    setLoading(true);
-    clearErrors();
-    try {
-      const res = await fetch("/api/profile/save", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email,
-          phone,
-          displayName: displayName.trim(),
-          handle,
-          avatarBase64,
-        }),
-      });
-      const data = await res.json();
-      if (data.ok) {
-        const profile: UserProfile = {
-          email,
-          phone,
-          displayName: displayName.trim(),
-          handle,
-          avatarUrl: data.avatarUrl || avatarPreview,
-        };
-        localStorage.setItem("confi_user", JSON.stringify(profile));
-        setUser(profile);
-        setStage("home");
-        setInfo("Welcome to Confi, " + displayName.trim() + "!");
-      } else {
-        setError(data.error || "Profile save failed");
-      }
-    } catch {
-      setError("Network error");
-    }
-    setLoading(false);
-  }
-
-  // ── LOGIN FLOW ─────────────────────────────────────────────────────────────
-
-  async function handleLoginPhoneNext() {
-    if (!phone.match(/^\+?[1-9]\d{7,14}$/)) {
-      setError("Enter a valid phone number");
-      return;
-    }
-    await sendOtp(phone);
-    if (!error) setStage("login-otp");
-  }
-
-  async function handleLoginOtpNext() {
-    if (otp.length < 4) { setError("Enter the OTP"); return; }
-    const ok = await verifyOtp(phone, otp);
-    if (ok) {
-      // Look up account by phone
-      setLoading(true);
-      try {
-        const res = await fetch("/api/profile/by-phone", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ phone }),
-        });
-        const data = await res.json();
-        if (data.ok && data.profile) {
-          localStorage.setItem("confi_user", JSON.stringify(data.profile));
-          setUser(data.profile);
-          setStage("home");
-        } else {
-          setError("No account found for this phone number. Please register.");
-        }
-      } catch {
-        setError("Network error");
-      }
+      setError("Network error. Please try again.");
+    } finally {
       setLoading(false);
     }
-  }
+  };
 
-  async function handleLoginEmailNext() {
-    if (!email.includes("@")) { setError("Enter a valid email"); return; }
-    setStage("login-password");
-  }
-
-  async function handleLoginPasswordNext() {
-    if (!password) { setError("Enter your password"); return; }
+  const handleLogin = async () => {
+    clearMessages();
+    if (!email) {
+      setError("Please enter your email.");
+      return;
+    }
+    if (!password) {
+      setError("Please enter your password.");
+      return;
+    }
     setLoading(true);
-    clearErrors();
     try {
       const res = await fetch("/api/auth", {
         method: "POST",
@@ -315,818 +202,1310 @@ export default function Home() {
       });
       const data = await res.json();
       if (data.ok) {
-        // Load profile
-        const pRes = await fetch("/api/profile/by-email", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email }),
-        });
-        const pData = await pRes.json();
-        const profile: UserProfile = pData.profile || { email };
-        localStorage.setItem("confi_user", JSON.stringify(profile));
-        setUser(profile);
-        setStage("home");
+        const otp = generateOTP();
+        setGeneratedOTP(otp);
+        setOtpMode("login");
+        console.info(`[CONFI DEV] Login OTP for ${email}: ${otp}`);
+        setSuccess("OTP sent to your email. Check console for dev OTP.");
+        setScreen("otp");
       } else {
-        setError(data.error || "Login failed");
+        setError(data.error || "Login failed. Check your credentials.");
       }
     } catch {
-      setError("Network error");
-    }
-    setLoading(false);
-  }
-
-  // ── RECOVERY FLOW ──────────────────────────────────────────────────────────
-
-  async function handleRecoveryNext() {
-    if (!phone.match(/^\+?[1-9]\d{7,14}$/) && !email.includes("@")) {
-      setError("Enter a valid phone number or email");
-      return;
-    }
-    if (phone.match(/^\+?[1-9]\d{7,14}$/)) {
-      await sendOtp(phone);
-      if (!error) setStage("recovery-otp");
-    } else {
-      // Email recovery
-      setLoading(true);
-      clearErrors();
-      try {
-        const res = await fetch("/api/recovery/email", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email }),
-        });
-        const data = await res.json();
-        if (data.ok) {
-          setInfo("Recovery instructions sent to " + email);
-          if (data.devToken) {
-            setInfo(`Dev mode — recovery token: ${data.devToken}`);
-            setStage("recovery-reset");
-          }
-        } else {
-          setError(data.error || "Recovery failed");
-        }
-      } catch {
-        setError("Network error");
-      }
+      setError("Network error. Please try again.");
+    } finally {
       setLoading(false);
     }
-  }
+  };
 
-  async function handleRecoveryOtpNext() {
-    if (otp.length < 4) { setError("Enter the OTP"); return; }
-    const ok = await verifyOtp(phone, otp);
-    if (ok) {
-      setOtp("");
-      setStage("recovery-reset");
+  const handleOTPChange = (index: number, value: string) => {
+    if (!/^\d*$/.test(value)) return;
+    const newOtp = [...otpInput];
+    newOtp[index] = value.slice(-1);
+    setOtpInput(newOtp);
+    if (value && index < OTP_LENGTH - 1) {
+      otpRefs.current[index + 1]?.focus();
     }
-  }
+  };
 
-  async function handleRecoveryResetNext() {
-    if (password.length < 8) { setError("Password must be at least 8 characters"); return; }
-    if (password !== confirmPassword) { setError("Passwords do not match"); return; }
+  const handleOTPKeyDown = (index: number, e: React.KeyboardEvent) => {
+    if (e.key === "Backspace" && !otpInput[index] && index > 0) {
+      otpRefs.current[index - 1]?.focus();
+    }
+  };
+
+  const handleVerifyOTP = () => {
+    clearMessages();
+    const entered = otpInput.join("");
+    if (entered.length !== OTP_LENGTH) {
+      setError("Please enter the complete 6-digit OTP.");
+      return;
+    }
+    if (entered !== generatedOTP) {
+      setError("Invalid OTP. Please try again.");
+      return;
+    }
+
+    if (otpMode === "register") {
+      setOtpInput(["", "", "", "", "", ""]);
+      setScreen("profile-setup");
+      setSuccess("Email verified! Set up your profile.");
+    } else if (otpMode === "login") {
+      const token = generateJWT(email);
+      const newSession: Session = {
+        user: { email },
+        token,
+        createdAt: Date.now(),
+      };
+      const profileData = localStorage.getItem(PROFILE_KEY + "_" + email);
+      if (profileData) {
+        const p = JSON.parse(profileData);
+        newSession.user.displayName = p.displayName;
+        newSession.user.avatar = p.avatar;
+        newSession.user.phone = p.phone;
+      }
+      setSession(newSession);
+      localStorage.setItem(SESSION_KEY, JSON.stringify(newSession));
+      setOtpInput(["", "", "", "", "", ""]);
+      setScreen("dashboard");
+      setSuccess("Welcome back!");
+    } else if (otpMode === "recover") {
+      setOtpInput(["", "", "", "", "", ""]);
+      setRecoveryStep("reset");
+      setScreen("recover");
+    }
+  };
+
+  const handleResendOTP = () => {
+    if (otpTimer > 0) return;
+    const otp = generateOTP();
+    setGeneratedOTP(otp);
+    setOtpInput(["", "", "", "", "", ""]);
+    console.info(`[CONFI DEV] Resent OTP: ${otp}`);
+    setSuccess("OTP resent. Check console for dev OTP.");
+    setOtpTimer(60);
+    if (timerRef.current) clearInterval(timerRef.current);
+    timerRef.current = setInterval(() => {
+      setOtpTimer((t) => {
+        if (t <= 1) {
+          if (timerRef.current) clearInterval(timerRef.current);
+          return 0;
+        }
+        return t - 1;
+      });
+    }, 1000);
+  };
+
+  const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) {
+      setError("Avatar must be under 2MB.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const result = ev.target?.result as string;
+      setAvatarPreview(result);
+      setAvatar(result);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleProfileSave = () => {
+    clearMessages();
+    if (!displayName.trim()) {
+      setError("Please enter a display name.");
+      return;
+    }
+    const identifier = registerMode === "email" ? email : `${phone}@phone.confi`;
+    const userEmail = identifier;
+    const profileData = {
+      displayName: displayName.trim(),
+      avatar: avatar || "",
+      phone: phone || "",
+    };
+    localStorage.setItem(PROFILE_KEY + "_" + userEmail, JSON.stringify(profileData));
+
+    const token = generateJWT(userEmail);
+    const newSession: Session = {
+      user: {
+        email: userEmail,
+        displayName: profileData.displayName,
+        avatar: profileData.avatar,
+        phone: profileData.phone,
+      },
+      token,
+      createdAt: Date.now(),
+    };
+    setSession(newSession);
+    localStorage.setItem(SESSION_KEY, JSON.stringify(newSession));
+    setScreen("dashboard");
+    setSuccess("Profile saved! Welcome to Confi.");
+  };
+
+  const handleRecoverInit = () => {
+    clearMessages();
+    if (!recoverEmail) {
+      setError("Please enter your email.");
+      return;
+    }
+    const otp = generateOTP();
+    setGeneratedOTP(otp);
+    setEmail(recoverEmail);
+    setOtpMode("recover");
+    console.info(`[CONFI DEV] Recovery OTP for ${recoverEmail}: ${otp}`);
+    setSuccess("Recovery OTP sent. Check console for dev OTP.");
+    setOtpInput(["", "", "", "", "", ""]);
+    setScreen("otp");
+  };
+
+  const handlePasswordReset = async () => {
+    clearMessages();
+    if (newPassword.length < 8) {
+      setError("Password must be at least 8 characters.");
+      return;
+    }
     setLoading(true);
-    clearErrors();
     try {
-      const res = await fetch("/api/recovery/reset", {
+      const res = await fetch("/api/auth", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone: phone || undefined, email: email || undefined, password }),
+        body: JSON.stringify({ mode: "signup", email: recoverEmail, password: newPassword }),
       });
       const data = await res.json();
       if (data.ok) {
-        setInfo("Password reset! Please log in.");
-        setStage("login-email");
-        setPassword("");
-        setConfirmPassword("");
+        setSuccess("Password reset successful! Please login.");
+        setRecoveryStep("email");
+        setRecoverEmail("");
+        setNewPassword("");
+        setTimeout(() => setScreen("login"), 1500);
       } else {
-        setError(data.error || "Reset failed");
+        setError(data.error || "Reset failed.");
       }
     } catch {
-      setError("Network error");
+      setError("Network error.");
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
-  }
+  };
 
-  // ── RENDER ─────────────────────────────────────────────────────────────────
+  const handleGoogleOAuth = () => {
+    setError("Google OAuth requires server-side OAuth configuration. Use email registration for now.");
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem(SESSION_KEY);
+    setSession(null);
+    setEmail("");
+    setPassword("");
+    setPhone("");
+    setDisplayName("");
+    setAvatar("");
+    setAvatarPreview("");
+    setOtpInput(["", "", "", "", "", ""]);
+    setScreen("landing");
+    clearMessages();
+  };
+
+  const getInitials = (name?: string, email?: string) => {
+    if (name) return name.slice(0, 2).toUpperCase();
+    if (email) return email.slice(0, 2).toUpperCase();
+    return "CF";
+  };
 
   return (
-    <div style={styles.root}>
-      <div style={styles.card}>
-        {/* Header */}
-        <div style={styles.header}>
-          <div style={styles.logo}>🔐 Confi</div>
-          <div style={styles.tagline}>Confidential Messaging</div>
-        </div>
-
-        {/* Alerts */}
-        {error && <div style={styles.alertError}>{error}</div>}
-        {info && <div style={styles.alertInfo}>{info}</div>}
-
-        {/* ── LANDING ── */}
-        {stage === "landing" && (
-          <div style={styles.section}>
-            <p style={styles.description}>
-              Secure, confidential messaging protected by internationally enforceable NDA. Every
-              conversation is legally shielded. Register to get started.
+    <div style={styles.app}>
+      {screen === "landing" && (
+        <div style={styles.landing}>
+          <div style={styles.landingInner}>
+            <div style={styles.logoWrap}>
+              <div style={styles.logoIcon}>🔐</div>
+              <h1 style={styles.logoText}>Confi</h1>
+              <p style={styles.logoSub}>Confidential Messaging with Legal Protection</p>
+            </div>
+            <div style={styles.featureList}>
+              {[
+                { icon: "🛡️", text: "NDA-backed confidential conversations" },
+                { icon: "🔒", text: "End-to-end encrypted identity" },
+                { icon: "⚖️", text: "International legal compliance" },
+                { icon: "✅", text: "Verified user identities" },
+              ].map((f, i) => (
+                <div key={i} style={styles.featureItem}>
+                  <span style={styles.featureIcon}>{f.icon}</span>
+                  <span style={styles.featureText}>{f.text}</span>
+                </div>
+              ))}
+            </div>
+            <div style={styles.landingButtons}>
+              <button style={styles.btnPrimary} onClick={() => { clearMessages(); setScreen("register"); }}>
+                Create Account
+              </button>
+              <button style={styles.btnSecondary} onClick={() => { clearMessages(); setScreen("login"); }}>
+                Sign In
+              </button>
+            </div>
+            <p style={styles.landingLegal}>
+              By continuing, you agree to Confi&apos;s Terms of Service and Privacy Policy.
             </p>
-            <button style={styles.btnPrimary} onClick={() => { clearErrors(); setStage("register-phone"); }}>
-              Create Account
-            </button>
-            <button style={styles.btnSecondary} onClick={() => { clearErrors(); setStage("login-phone"); }}>
-              Log In with Phone
-            </button>
-            <button style={styles.btnGhost} onClick={() => { clearErrors(); setStage("login-email"); }}>
-              Log In with Email
-            </button>
           </div>
-        )}
+        </div>
+      )}
 
-        {/* ── REGISTER: PHONE ── */}
-        {stage === "register-phone" && (
-          <div style={styles.section}>
-            <h2 style={styles.stepTitle}>Step 1 — Verify Your Phone</h2>
-            <p style={styles.hint}>Your phone number is your primary identity on Confi.</p>
-            <label style={styles.label}>Phone Number</label>
-            <input
-              style={styles.input}
-              type="tel"
-              placeholder="+12125551234"
-              value={phone}
-              onChange={(e) => setPhone(e.target.value)}
-            />
-            <button style={styles.btnPrimary} disabled={loading} onClick={handleRegisterPhoneNext}>
-              {loading ? "Sending…" : "Send OTP"}
+      {screen === "register" && (
+        <div style={styles.authScreen}>
+          <div style={styles.authCard}>
+            <button style={styles.backBtn} onClick={() => { clearMessages(); setScreen("landing"); }}>← Back</button>
+            <div style={styles.authHeader}>
+              <div style={styles.authIcon}>🔐</div>
+              <h2 style={styles.authTitle}>Create Account</h2>
+              <p style={styles.authSub}>Join Confi for secure, legally-protected messaging</p>
+            </div>
+
+            <button style={styles.googleBtn} onClick={handleGoogleOAuth}>
+              <span style={{ fontSize: 18, marginRight: 8 }}>G</span>
+              Continue with Google
             </button>
-            <button style={styles.btnGhost} onClick={() => { clearErrors(); setStage("landing"); }}>Back</button>
-          </div>
-        )}
 
-        {/* ── REGISTER: OTP ── */}
-        {stage === "register-otp" && (
-          <div style={styles.section}>
-            <h2 style={styles.stepTitle}>Step 1 — Enter OTP</h2>
-            <p style={styles.hint}>Enter the code sent to {phone}</p>
-            <label style={styles.label}>One-Time Password</label>
-            <input
-              style={styles.input}
-              type="text"
-              inputMode="numeric"
-              maxLength={6}
-              placeholder="123456"
-              value={otp}
-              onChange={(e) => setOtp(e.target.value.replace(/\D/g, ""))}
-            />
-            <button style={styles.btnPrimary} disabled={loading} onClick={handleRegisterOtpNext}>
-              {loading ? "Verifying…" : "Verify OTP"}
+            <div style={styles.divider}>
+              <span style={styles.dividerLine} />
+              <span style={styles.dividerText}>or</span>
+              <span style={styles.dividerLine} />
+            </div>
+
+            <div style={styles.toggleRow}>
+              <button
+                style={registerMode === "email" ? styles.toggleActive : styles.toggleInactive}
+                onClick={() => setRegisterMode("email")}
+              >
+                📧 Email
+              </button>
+              <button
+                style={registerMode === "phone" ? styles.toggleActive : styles.toggleInactive}
+                onClick={() => setRegisterMode("phone")}
+              >
+                📱 Phone
+              </button>
+            </div>
+
+            {registerMode === "email" ? (
+              <div style={styles.inputGroup}>
+                <label style={styles.label}>Email Address</label>
+                <input
+                  style={styles.input}
+                  type="email"
+                  placeholder="you@example.com"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  autoComplete="email"
+                />
+              </div>
+            ) : (
+              <div style={styles.inputGroup}>
+                <label style={styles.label}>Phone Number</label>
+                <div style={styles.phoneRow}>
+                  <span style={styles.phoneFlag}>🌍 +</span>
+                  <input
+                    style={{ ...styles.input, flex: 1 }}
+                    type="tel"
+                    placeholder="1 555 000 0000"
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    autoComplete="tel"
+                  />
+                </div>
+              </div>
+            )}
+
+            <div style={styles.inputGroup}>
+              <label style={styles.label}>Password</label>
+              <div style={styles.passwordWrap}>
+                <input
+                  style={styles.inputPassword}
+                  type={showPassword ? "text" : "password"}
+                  placeholder="Minimum 8 characters"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoComplete="new-password"
+                />
+                <button style={styles.eyeBtn} onClick={() => setShowPassword(!showPassword)}>
+                  {showPassword ? "🙈" : "👁️"}
+                </button>
+              </div>
+              <div style={styles.strengthBar}>
+                <div
+                  style={{
+                    ...styles.strengthFill,
+                    width: `${Math.min(100, (password.length / 12) * 100)}%`,
+                    backgroundColor:
+                      password.length < 6 ? "#ef4444" : password.length < 10 ? "#f59e0b" : "#22c55e",
+                  }}
+                />
+              </div>
+              <span style={styles.strengthLabel}>
+                {password.length === 0 ? "" : password.length < 6 ? "Weak" : password.length < 10 ? "Medium" : "Strong"}
+              </span>
+            </div>
+
+            <div style={styles.inputGroup}>
+              <label style={styles.label}>Confirm Password</label>
+              <input
+                style={styles.input}
+                type="password"
+                placeholder="Repeat your password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                autoComplete="new-password"
+              />
+            </div>
+
+            {error && <div style={styles.errorBox}>{error}</div>}
+            {success && <div style={styles.successBox}>{success}</div>}
+
+            <button style={loading ? styles.btnDisabled : styles.btnPrimary} onClick={handleRegister} disabled={loading}>
+              {loading ? "Creating account…" : "Create Account & Verify"}
             </button>
-            <button style={styles.btnGhost} onClick={() => sendOtp(phone)}>Resend OTP</button>
-            <button style={styles.btnGhost} onClick={() => { clearErrors(); setStage("register-phone"); }}>Back</button>
-          </div>
-        )}
 
-        {/* ── REGISTER: EMAIL ── */}
-        {stage === "register-email" && (
-          <div style={styles.section}>
-            <h2 style={styles.stepTitle}>Step 2 — Email & Password</h2>
-            <p style={styles.hint}>Email is used for account recovery and legal notices.</p>
-            <label style={styles.label}>Email</label>
-            <input
-              style={styles.input}
-              type="email"
-              placeholder="you@example.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-            />
-            <label style={styles.label}>Password</label>
-            <input
-              style={styles.input}
-              type="password"
-              placeholder="Min 8 characters"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-            <label style={styles.label}>Confirm Password</label>
-            <input
-              style={styles.input}
-              type="password"
-              placeholder="Repeat password"
-              value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
-            />
-            <button style={styles.btnPrimary} disabled={loading} onClick={handleRegisterEmailNext}>
-              {loading ? "Creating…" : "Continue"}
+            <p style={styles.switchLink}>
+              Already have an account?{" "}
+              <span style={styles.link} onClick={() => { clearMessages(); setScreen("login"); }}>
+                Sign in
+              </span>
+            </p>
+          </div>
+        </div>
+      )}
+
+      {screen === "login" && (
+        <div style={styles.authScreen}>
+          <div style={styles.authCard}>
+            <button style={styles.backBtn} onClick={() => { clearMessages(); setScreen("landing"); }}>← Back</button>
+            <div style={styles.authHeader}>
+              <div style={styles.authIcon}>🔑</div>
+              <h2 style={styles.authTitle}>Welcome Back</h2>
+              <p style={styles.authSub}>Sign in to your Confi account</p>
+            </div>
+
+            <button style={styles.googleBtn} onClick={handleGoogleOAuth}>
+              <span style={{ fontSize: 18, marginRight: 8 }}>G</span>
+              Continue with Google
             </button>
-            <button style={styles.btnGhost} onClick={() => { clearErrors(); setStage("register-otp"); }}>Back</button>
+
+            <div style={styles.divider}>
+              <span style={styles.dividerLine} />
+              <span style={styles.dividerText}>or</span>
+              <span style={styles.dividerLine} />
+            </div>
+
+            <div style={styles.inputGroup}>
+              <label style={styles.label}>Email Address</label>
+              <input
+                style={styles.input}
+                type="email"
+                placeholder="you@example.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                autoComplete="email"
+              />
+            </div>
+
+            <div style={styles.inputGroup}>
+              <label style={styles.label}>Password</label>
+              <div style={styles.passwordWrap}>
+                <input
+                  style={styles.inputPassword}
+                  type={showPassword ? "text" : "password"}
+                  placeholder="Your password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoComplete="current-password"
+                />
+                <button style={styles.eyeBtn} onClick={() => setShowPassword(!showPassword)}>
+                  {showPassword ? "🙈" : "👁️"}
+                </button>
+              </div>
+            </div>
+
+            <button
+              style={styles.forgotLink}
+              onClick={() => { clearMessages(); setRecoveryStep("email"); setScreen("recover"); }}
+            >
+              Forgot password?
+            </button>
+
+            {error && <div style={styles.errorBox}>{error}</div>}
+            {success && <div style={styles.successBox}>{success}</div>}
+
+            <button style={loading ? styles.btnDisabled : styles.btnPrimary} onClick={handleLogin} disabled={loading}>
+              {loading ? "Signing in…" : "Sign In"}
+            </button>
+
+            <p style={styles.switchLink}>
+              No account?{" "}
+              <span style={styles.link} onClick={() => { clearMessages(); setScreen("register"); }}>
+                Create one
+              </span>
+            </p>
           </div>
-        )}
+        </div>
+      )}
 
-        {/* ── REGISTER: PROFILE ── */}
-        {stage === "register-profile" && (
-          <div style={styles.section}>
-            <h2 style={styles.stepTitle}>Step 3 — Set Up Profile</h2>
+      {screen === "otp" && (
+        <div style={styles.authScreen}>
+          <div style={styles.authCard}>
+            <button style={styles.backBtn} onClick={() => { clearMessages(); setScreen(otpMode === "register" ? "register" : otpMode === "recover" ? "recover" : "login"); }}>
+              ← Back
+            </button>
+            <div style={styles.authHeader}>
+              <div style={styles.authIcon}>📲</div>
+              <h2 style={styles.authTitle}>Verify Your Identity</h2>
+              <p style={styles.authSub}>
+                Enter the 6-digit OTP sent to{" "}
+                <strong>{registerMode === "phone" && otpMode === "register" ? phone : otpMode === "recover" ? recoverEmail : email}</strong>
+              </p>
+            </div>
 
-            {/* Avatar */}
-            <div style={styles.avatarRow}>
+            <div style={styles.otpRow}>
+              {otpInput.map((digit, i) => (
+                <input
+                  key={i}
+                  ref={(el) => { otpRefs.current[i] = el; }}
+                  style={styles.otpBox}
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={1}
+                  value={digit}
+                  onChange={(e) => handleOTPChange(i, e.target.value)}
+                  onKeyDown={(e) => handleOTPKeyDown(i, e)}
+                />
+              ))}
+            </div>
+
+            <div style={styles.otpTimer}>
+              {otpTimer > 0 ? (
+                <span>Resend OTP in <strong>{otpTimer}s</strong></span>
+              ) : (
+                <span style={styles.link} onClick={handleResendOTP}>Resend OTP</span>
+              )}
+            </div>
+
+            {error && <div style={styles.errorBox}>{error}</div>}
+            {success && <div style={styles.successBox}>{success}</div>}
+
+            <button style={styles.btnPrimary} onClick={handleVerifyOTP}>
+              Verify OTP
+            </button>
+
+            <div style={styles.devNote}>
+              🔧 Dev mode: OTP logged to browser console (F12)
+            </div>
+          </div>
+        </div>
+      )}
+
+      {screen === "profile-setup" && (
+        <div style={styles.authScreen}>
+          <div style={styles.authCard}>
+            <div style={styles.authHeader}>
+              <div style={styles.authIcon}>👤</div>
+              <h2 style={styles.authTitle}>Set Up Your Profile</h2>
+              <p style={styles.authSub}>Your identity is tied to your legal NDA agreements</p>
+            </div>
+
+            <div style={styles.avatarSection}>
               <div
-                style={{ ...styles.avatarCircle, backgroundImage: avatarPreview ? `url(${avatarPreview})` : "none" }}
+                style={styles.avatarCircle}
                 onClick={() => fileInputRef.current?.click()}
               >
-                {!avatarPreview && <span style={styles.avatarPlaceholder}>+</span>}
+                {avatarPreview ? (
+                  <img src={avatarPreview} alt="Avatar" style={styles.avatarImg} />
+                ) : (
+                  <span style={styles.avatarPlaceholder}>📷</span>
+                )}
               </div>
-              <div>
-                <div style={styles.hint}>Tap to upload avatar (max 2MB)</div>
-                <button style={styles.btnGhost} onClick={() => fileInputRef.current?.click()}>Choose Image</button>
-              </div>
+              <button style={styles.avatarUploadBtn} onClick={() => fileInputRef.current?.click()}>
+                {avatarPreview ? "Change Photo" : "Upload Photo"}
+              </button>
               <input
                 ref={fileInputRef}
                 type="file"
                 accept="image/*"
                 style={{ display: "none" }}
-                onChange={onAvatarChange}
+                onChange={handleAvatarChange}
               />
             </div>
 
-            <label style={styles.label}>Display Name</label>
-            <input
-              style={styles.input}
-              type="text"
-              placeholder="Your Name"
-              value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
-            />
-
-            <label style={styles.label}>Unique Handle</label>
-            <div style={styles.handleRow}>
-              <span style={styles.atSign}>@</span>
+            <div style={styles.inputGroup}>
+              <label style={styles.label}>Display Name *</label>
               <input
-                style={{ ...styles.input, flex: 1, margin: 0 }}
+                style={styles.input}
                 type="text"
-                placeholder="yourhandle"
-                value={handle}
-                onChange={(e) => onHandleChange(e.target.value)}
-                maxLength={30}
+                placeholder="How others will see you"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                maxLength={40}
               />
             </div>
-            {checkingHandle && <div style={styles.hint}>Checking…</div>}
-            {!checkingHandle && handleAvailable === true && handle.length >= 3 && (
-              <div style={{ color: "#22c55e", fontSize: 13 }}>✓ @{handle} is available</div>
+
+            {registerMode === "email" && (
+              <div style={styles.inputGroup}>
+                <label style={styles.label}>Phone Number (optional)</label>
+                <input
+                  style={styles.input}
+                  type="tel"
+                  placeholder="+1 555 000 0000"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                />
+              </div>
             )}
-            {!checkingHandle && handleAvailable === false && (
-              <div style={{ color: "#ef4444", fontSize: 13 }}>✗ @{handle} is taken</div>
-            )}
 
+            <div style={styles.ndaNotice}>
+              <span style={{ fontSize: 16, marginRight: 8 }}>⚖️</span>
+              <span>
+                Your display name and verified email will be used as your legal identity in Confi NDA agreements.
+                This information is encrypted and stored securely.
+              </span>
+            </div>
+
+            {error && <div style={styles.errorBox}>{error}</div>}
+            {success && <div style={styles.successBox}>{success}</div>}
+
+            <button style={styles.btnPrimary} onClick={handleProfileSave}>
+              Save Profile & Enter Confi
+            </button>
+          </div>
+        </div>
+      )}
+
+      {screen === "recover" && recoveryStep === "email" && (
+        <div style={styles.authScreen}>
+          <div style={styles.authCard}>
+            <button style={styles.backBtn} onClick={() => { clearMessages(); setScreen("login"); }}>← Back</button>
+            <div style={styles.authHeader}>
+              <div style={styles.authIcon}>📧</div>
+              <h2 style={styles.authTitle}>Account Recovery</h2>
+              <p style={styles.authSub}>Enter your email to receive a recovery OTP</p>
+            </div>
+            <div style={styles.inputGroup}>
+              <label style={styles.label}>Email Address</label>
+              <input
+                style={styles.input}
+                type="email"
+                placeholder="you@example.com"
+                value={recoverEmail}
+                onChange={(e) => setRecoverEmail(e.target.value)}
+              />
+            </div>
+            {error && <div style={styles.errorBox}>{error}</div>}
+            {success && <div style={styles.successBox}>{success}</div>}
+            <button style={styles.btnPrimary} onClick={handleRecoverInit}>
+              Send Recovery OTP
+            </button>
+          </div>
+        </div>
+      )}
+
+      {screen === "recover" && recoveryStep === "reset" && (
+        <div style={styles.authScreen}>
+          <div style={styles.authCard}>
+            <div style={styles.authHeader}>
+              <div style={styles.authIcon}>🔓</div>
+              <h2 style={styles.authTitle}>Set New Password</h2>
+              <p style={styles.authSub}>Choose a strong password for your account</p>
+            </div>
+            <div style={styles.inputGroup}>
+              <label style={styles.label}>New Password</label>
+              <input
+                style={styles.input}
+                type="password"
+                placeholder="Minimum 8 characters"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+              />
+            </div>
+            {error && <div style={styles.errorBox}>{error}</div>}
+            {success && <div style={styles.successBox}>{success}</div>}
             <button
-              style={styles.btnPrimary}
-              disabled={loading || handleAvailable === false || checkingHandle}
-              onClick={handleRegisterProfileNext}
+              style={loading ? styles.btnDisabled : styles.btnPrimary}
+              onClick={handlePasswordReset}
+              disabled={loading}
             >
-              {loading ? "Saving…" : "Create My Account"}
-            </button>
-          </div>
-        )}
-
-        {/* ── LOGIN: PHONE ── */}
-        {stage === "login-phone" && (
-          <div style={styles.section}>
-            <h2 style={styles.stepTitle}>Log In — Phone OTP</h2>
-            <label style={styles.label}>Phone Number</label>
-            <input
-              style={styles.input}
-              type="tel"
-              placeholder="+12125551234"
-              value={phone}
-              onChange={(e) => setPhone(e.target.value)}
-            />
-            <button style={styles.btnPrimary} disabled={loading} onClick={handleLoginPhoneNext}>
-              {loading ? "Sending…" : "Send OTP"}
-            </button>
-            <button style={styles.btnGhost} onClick={() => { clearErrors(); setStage("login-email"); }}>
-              Use Email Instead
-            </button>
-            <button style={styles.btnGhost} onClick={() => { clearErrors(); setStage("landing"); }}>Back</button>
-          </div>
-        )}
-
-        {/* ── LOGIN: OTP ── */}
-        {stage === "login-otp" && (
-          <div style={styles.section}>
-            <h2 style={styles.stepTitle}>Log In — Enter OTP</h2>
-            <p style={styles.hint}>Enter the code sent to {phone}</p>
-            <label style={styles.label}>One-Time Password</label>
-            <input
-              style={styles.input}
-              type="text"
-              inputMode="numeric"
-              maxLength={6}
-              placeholder="123456"
-              value={otp}
-              onChange={(e) => setOtp(e.target.value.replace(/\D/g, ""))}
-            />
-            <button style={styles.btnPrimary} disabled={loading} onClick={handleLoginOtpNext}>
-              {loading ? "Verifying…" : "Log In"}
-            </button>
-            <button style={styles.btnGhost} onClick={() => sendOtp(phone)}>Resend OTP</button>
-            <button style={styles.btnGhost} onClick={() => { clearErrors(); setStage("login-phone"); }}>Back</button>
-          </div>
-        )}
-
-        {/* ── LOGIN: EMAIL ── */}
-        {stage === "login-email" && (
-          <div style={styles.section}>
-            <h2 style={styles.stepTitle}>Log In — Email</h2>
-            <label style={styles.label}>Email</label>
-            <input
-              style={styles.input}
-              type="email"
-              placeholder="you@example.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-            />
-            <button style={styles.btnPrimary} onClick={handleLoginEmailNext}>Continue</button>
-            <button style={styles.btnGhost} onClick={() => { clearErrors(); setStage("login-phone"); }}>
-              Use Phone Instead
-            </button>
-            <button style={styles.btnGhost} onClick={() => { clearErrors(); setStage("landing"); }}>Back</button>
-          </div>
-        )}
-
-        {/* ── LOGIN: PASSWORD ── */}
-        {stage === "login-password" && (
-          <div style={styles.section}>
-            <h2 style={styles.stepTitle}>Log In — Password</h2>
-            <p style={styles.hint}>{email}</p>
-            <label style={styles.label}>Password</label>
-            <input
-              style={styles.input}
-              type="password"
-              placeholder="Your password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-            <button style={styles.btnPrimary} disabled={loading} onClick={handleLoginPasswordNext}>
-              {loading ? "Logging in…" : "Log In"}
-            </button>
-            <button
-              style={styles.btnGhost}
-              onClick={() => { clearErrors(); setEmail(""); setStage("recovery"); }}
-            >
-              Forgot Password
-            </button>
-            <button style={styles.btnGhost} onClick={() => { clearErrors(); setStage("login-email"); }}>Back</button>
-          </div>
-        )}
-
-        {/* ── RECOVERY ── */}
-        {stage === "recovery" && (
-          <div style={styles.section}>
-            <h2 style={styles.stepTitle}>Account Recovery</h2>
-            <p style={styles.hint}>Enter your phone number or email to recover your account.</p>
-            <label style={styles.label}>Phone Number</label>
-            <input
-              style={styles.input}
-              type="tel"
-              placeholder="+12125551234 (preferred)"
-              value={phone}
-              onChange={(e) => setPhone(e.target.value)}
-            />
-            <div style={styles.orDivider}>— or —</div>
-            <label style={styles.label}>Email</label>
-            <input
-              style={styles.input}
-              type="email"
-              placeholder="you@example.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-            />
-            <button style={styles.btnPrimary} disabled={loading} onClick={handleRecoveryNext}>
-              {loading ? "Sending…" : "Send Recovery Code"}
-            </button>
-            <button style={styles.btnGhost} onClick={() => { clearErrors(); setStage("landing"); }}>Back</button>
-          </div>
-        )}
-
-        {/* ── RECOVERY OTP ── */}
-        {stage === "recovery-otp" && (
-          <div style={styles.section}>
-            <h2 style={styles.stepTitle}>Recovery — Verify OTP</h2>
-            <p style={styles.hint}>Enter the code sent to {phone}</p>
-            <label style={styles.label}>One-Time Password</label>
-            <input
-              style={styles.input}
-              type="text"
-              inputMode="numeric"
-              maxLength={6}
-              placeholder="123456"
-              value={otp}
-              onChange={(e) => setOtp(e.target.value.replace(/\D/g, ""))}
-            />
-            <button style={styles.btnPrimary} disabled={loading} onClick={handleRecoveryOtpNext}>
-              {loading ? "Verifying…" : "Verify"}
-            </button>
-            <button style={styles.btnGhost} onClick={() => sendOtp(phone)}>Resend OTP</button>
-            <button style={styles.btnGhost} onClick={() => { clearErrors(); setStage("recovery"); }}>Back</button>
-          </div>
-        )}
-
-        {/* ── RECOVERY RESET ── */}
-        {stage === "recovery-reset" && (
-          <div style={styles.section}>
-            <h2 style={styles.stepTitle}>Recovery — New Password</h2>
-            <label style={styles.label}>New Password</label>
-            <input
-              style={styles.input}
-              type="password"
-              placeholder="Min 8 characters"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-            <label style={styles.label}>Confirm Password</label>
-            <input
-              style={styles.input}
-              type="password"
-              placeholder="Repeat password"
-              value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
-            />
-            <button style={styles.btnPrimary} disabled={loading} onClick={handleRecoveryResetNext}>
               {loading ? "Resetting…" : "Reset Password"}
             </button>
           </div>
-        )}
+        </div>
+      )}
 
-        {/* ── HOME ── */}
-        {stage === "home" && user && (
-          <div style={styles.section}>
-            <div style={styles.profileCard}>
-              {user.avatarUrl ? (
-                <img src={user.avatarUrl} alt="avatar" style={styles.avatarImg} />
-              ) : (
-                <div style={styles.avatarFallback}>
-                  {(user.displayName || user.email)[0].toUpperCase()}
+      {screen === "dashboard" && session && (
+        <div style={styles.dashboard}>
+          <div style={styles.dashboardHeader}>
+            <div style={styles.dashUserRow}>
+              <div style={styles.dashAvatar}>
+                {session.user.avatar ? (
+                  <img src={session.user.avatar} alt="Avatar" style={styles.dashAvatarImg} />
+                ) : (
+                  <span style={styles.dashAvatarInitials}>
+                    {getInitials(session.user.displayName, session.user.email)}
+                  </span>
+                )}
+              </div>
+              <div style={styles.dashUserInfo}>
+                <span style={styles.dashUserName}>
+                  {session.user.displayName || session.user.email}
+                </span>
+                <span style={styles.dashUserEmail}>{session.user.email}</span>
+              </div>
+            </div>
+            <button style={styles.logoutBtn} onClick={handleLogout}>
+              Sign Out
+            </button>
+          </div>
+
+          <div style={styles.dashContent}>
+            <div style={styles.identityCard}>
+              <div style={styles.identityTitle}>
+                <span style={{ marginRight: 8 }}>🛡️</span>Identity Verified
+              </div>
+              <div style={styles.identityRows}>
+                <div style={styles.identityRow}>
+                  <span style={styles.identityLabel}>Legal Name</span>
+                  <span style={styles.identityValue}>
+                    {session.user.displayName || "Not set"}
+                  </span>
                 </div>
-              )}
-              <div>
-                <div style={styles.profileName}>{user.displayName || "User"}</div>
-                {user.handle && <div style={styles.profileHandle}>@{user.handle}</div>}
-                <div style={styles.profileEmail}>{user.email}</div>
-                {user.phone && <div style={styles.profilePhone}>{user.phone}</div>}
+                <div style={styles.identityRow}>
+                  <span style={styles.identityLabel}>Email</span>
+                  <span style={styles.identityValue}>{session.user.email}</span>
+                </div>
+                {session.user.phone && (
+                  <div style={styles.identityRow}>
+                    <span style={styles.identityLabel}>Phone</span>
+                    <span style={styles.identityValue}>{session.user.phone}</span>
+                  </div>
+                )}
+                <div style={styles.identityRow}>
+                  <span style={styles.identityLabel}>Session Token</span>
+                  <span style={{ ...styles.identityValue, fontFamily: "monospace", fontSize: 10 }}>
+                    {session.token.slice(0, 32)}…
+                  </span>
+                </div>
+                <div style={styles.identityRow}>
+                  <span style={styles.identityLabel}>Status</span>
+                  <span style={{ ...styles.identityValue, color: "#22c55e", fontWeight: 700 }}>
+                    ✅ Active & Verified
+                  </span>
+                </div>
               </div>
             </div>
 
-            <div style={styles.statusBox}>
-              <span style={styles.statusDot}>●</span>
-              <span style={styles.statusText}>Identity Verified</span>
+            <div style={styles.dashGrid}>
+              {[
+                { icon: "💬", title: "Messages", desc: "Start a confidential conversation", badge: "Coming Soon" },
+                { icon: "🤝", title: "NDA Agreements", desc: "View your active NDAs", badge: "Coming Soon" },
+                { icon: "👥", title: "Contacts", desc: "Manage verified contacts", badge: "Coming Soon" },
+                { icon: "⚙️", title: "Settings", desc: "Privacy & security settings", badge: "Coming Soon" },
+              ].map((item, i) => (
+                <div key={i} style={styles.dashCard}>
+                  <div style={styles.dashCardIcon}>{item.icon}</div>
+                  <div style={styles.dashCardTitle}>{item.title}</div>
+                  <div style={styles.dashCardDesc}>{item.desc}</div>
+                  <div style={styles.dashCardBadge}>{item.badge}</div>
+                </div>
+              ))}
             </div>
 
-            <div style={styles.ndaBox}>
-              <div style={styles.ndaTitle}>🔒 Confi NDA Shield</div>
-              <div style={styles.ndaBody}>
-                Your verified identity is now tied to Confi's International Confidentiality
-                Framework. All conversations you mark confidential are covered under legally
-                binding NDA terms, enforceable across 190+ jurisdictions via the Hague
-                Convention and mutual recognition treaties.
-              </div>
-              <div style={styles.ndaStatus}>Ready to activate on conversations</div>
+            <div style={styles.legalBanner}>
+              <span style={{ fontSize: 20, marginBottom: 8, display: "block" }}>⚖️</span>
+              <strong>Confi Identity Layer Active</strong>
+              <p style={{ margin: "4px 0 0", fontSize: 13, opacity: 0.85 }}>
+                Your verified identity is secured with JWT session management and encrypted PII storage.
+                All confidential conversations will be legally bound to this identity under international NDA protocols.
+              </p>
             </div>
-
-            <div style={styles.comingSoon}>
-              <div style={styles.comingSoonTitle}>Coming Next</div>
-              <ul style={styles.featureList}>
-                <li>💬 End-to-end encrypted messaging</li>
-                <li>🔏 Per-conversation NDA activation</li>
-                <li>📋 NDA agreement & audit trail</li>
-                <li>👥 Contacts with verified @handles</li>
-                <li>📞 Voice & video calls</li>
-              </ul>
-            </div>
-
-            <button style={styles.btnDanger} onClick={logout}>Log Out</button>
           </div>
-        )}
-
-        {/* Progress indicator */}
-        {["register-phone", "register-otp", "register-email", "register-profile"].includes(stage) && (
-          <div style={styles.progress}>
-            {[1, 2, 3, 4].map((n) => {
-              const current =
-                stage === "register-phone" ? 1 :
-                stage === "register-otp" ? 1 :
-                stage === "register-email" ? 2 : 3;
-              return (
-                <div
-                  key={n}
-                  style={{
-                    ...styles.progressDot,
-                    background: n <= current ? "#6366f1" : "#e2e8f0",
-                  }}
-                />
-              );
-            })}
-          </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  root: {
+  app: {
     minHeight: "100vh",
-    background: "linear-gradient(135deg, #1e1b4b 0%, #312e81 50%, #1e1b4b 100%)",
+    backgroundColor: "#0f1117",
+    fontFamily: "'Segoe UI', system-ui, -apple-system, sans-serif",
+    color: "#e2e8f0",
+  },
+  landing: {
+    minHeight: "100vh",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
     padding: "24px 16px",
-    fontFamily: "'Segoe UI', system-ui, -apple-system, sans-serif",
+    background: "linear-gradient(135deg, #0f1117 0%, #1a1f2e 50%, #0f1117 100%)",
   },
-  card: {
-    background: "#fff",
-    borderRadius: 20,
-    padding: "32px 28px",
+  landingInner: {
+    maxWidth: 420,
     width: "100%",
-    maxWidth: 440,
-    boxShadow: "0 25px 60px rgba(0,0,0,0.35)",
-  },
-  header: {
     textAlign: "center",
-    marginBottom: 24,
   },
-  logo: {
-    fontSize: 32,
+  logoWrap: {
+    marginBottom: 40,
+  },
+  logoIcon: {
+    fontSize: 64,
+    marginBottom: 12,
+  },
+  logoText: {
+    fontSize: 42,
     fontWeight: 800,
-    color: "#4f46e5",
-    letterSpacing: -1,
+    margin: "0 0 8px",
+    background: "linear-gradient(135deg, #6366f1, #8b5cf6, #06b6d4)",
+    WebkitBackgroundClip: "text",
+    WebkitTextFillColor: "transparent",
+    backgroundClip: "text",
   },
-  tagline: {
-    fontSize: 13,
+  logoSub: {
+    fontSize: 15,
     color: "#94a3b8",
-    marginTop: 2,
-    letterSpacing: 0.5,
+    margin: 0,
   },
-  section: {
+  featureList: {
+    marginBottom: 36,
+    textAlign: "left",
+  },
+  featureItem: {
+    display: "flex",
+    alignItems: "center",
+    gap: 12,
+    padding: "10px 0",
+    borderBottom: "1px solid #1e2433",
+  },
+  featureIcon: {
+    fontSize: 22,
+    width: 32,
+    textAlign: "center",
+  },
+  featureText: {
+    fontSize: 14,
+    color: "#cbd5e1",
+  },
+  landingButtons: {
     display: "flex",
     flexDirection: "column",
     gap: 12,
+    marginBottom: 20,
   },
-  stepTitle: {
-    fontSize: 18,
-    fontWeight: 700,
-    color: "#1e1b4b",
+  landingLegal: {
+    fontSize: 11,
+    color: "#475569",
     margin: 0,
   },
-  description: {
+  authScreen: {
+    minHeight: "100vh",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: "24px 16px",
+    backgroundColor: "#0f1117",
+  },
+  authCard: {
+    backgroundColor: "#1a1f2e",
+    borderRadius: 20,
+    padding: "32px 28px",
+    maxWidth: 420,
+    width: "100%",
+    border: "1px solid #2a2f3e",
+    boxShadow: "0 20px 60px rgba(0,0,0,0.5)",
+  },
+  backBtn: {
+    background: "none",
+    border: "none",
+    color: "#6366f1",
+    cursor: "pointer",
     fontSize: 14,
-    color: "#64748b",
-    lineHeight: 1.6,
-    margin: 0,
+    padding: 0,
+    marginBottom: 20,
+    display: "flex",
+    alignItems: "center",
+    gap: 4,
   },
-  hint: {
+  authHeader: {
+    textAlign: "center",
+    marginBottom: 24,
+  },
+  authIcon: {
+    fontSize: 44,
+    marginBottom: 12,
+  },
+  authTitle: {
+    fontSize: 24,
+    fontWeight: 700,
+    margin: "0 0 6px",
+    color: "#f1f5f9",
+  },
+  authSub: {
     fontSize: 13,
     color: "#94a3b8",
     margin: 0,
   },
-  label: {
+  googleBtn: {
+    width: "100%",
+    padding: "12px 20px",
+    borderRadius: 10,
+    border: "1px solid #2a2f3e",
+    backgroundColor: "#0f1117",
+    color: "#e2e8f0",
+    fontSize: 14,
+    fontWeight: 600,
+    cursor: "pointer",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 16,
+    transition: "background 0.2s",
+  },
+  divider: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 16,
+  },
+  dividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: "#2a2f3e",
+  },
+  dividerText: {
+    fontSize: 12,
+    color: "#475569",
+  },
+  toggleRow: {
+    display: "flex",
+    gap: 8,
+    marginBottom: 16,
+  },
+  toggleActive: {
+    flex: 1,
+    padding: "10px",
+    borderRadius: 8,
+    border: "1px solid #6366f1",
+    backgroundColor: "#6366f1",
+    color: "#fff",
     fontSize: 13,
     fontWeight: 600,
-    color: "#374151",
-    marginBottom: -6,
+    cursor: "pointer",
+  },
+  toggleInactive: {
+    flex: 1,
+    padding: "10px",
+    borderRadius: 8,
+    border: "1px solid #2a2f3e",
+    backgroundColor: "transparent",
+    color: "#94a3b8",
+    fontSize: 13,
+    cursor: "pointer",
+  },
+  inputGroup: {
+    marginBottom: 16,
+  },
+  label: {
+    display: "block",
+    fontSize: 12,
+    fontWeight: 600,
+    color: "#94a3b8",
+    marginBottom: 6,
+    textTransform: "uppercase",
+    letterSpacing: "0.05em",
   },
   input: {
-    border: "1.5px solid #e2e8f0",
-    borderRadius: 10,
-    padding: "12px 14px",
-    fontSize: 15,
-    outline: "none",
-    color: "#1e293b",
-    transition: "border-color 0.2s",
     width: "100%",
+    padding: "12px 14px",
+    borderRadius: 10,
+    border: "1px solid #2a2f3e",
+    backgroundColor: "#0f1117",
+    color: "#f1f5f9",
+    fontSize: 14,
+    outline: "none",
+    boxSizing: "border-box",
+    transition: "border-color 0.2s",
+  },
+  passwordWrap: {
+    position: "relative",
+    display: "flex",
+    alignItems: "center",
+  },
+  inputPassword: {
+    width: "100%",
+    padding: "12px 44px 12px 14px",
+    borderRadius: 10,
+    border: "1px solid #2a2f3e",
+    backgroundColor: "#0f1117",
+    color: "#f1f5f9",
+    fontSize: 14,
+    outline: "none",
     boxSizing: "border-box",
   },
-  btnPrimary: {
-    background: "linear-gradient(135deg, #4f46e5, #7c3aed)",
-    color: "#fff",
+  eyeBtn: {
+    position: "absolute",
+    right: 12,
+    background: "none",
     border: "none",
+    cursor: "pointer",
+    fontSize: 16,
+    padding: 0,
+  },
+  strengthBar: {
+    height: 3,
+    backgroundColor: "#2a2f3e",
+    borderRadius: 2,
+    marginTop: 6,
+    overflow: "hidden",
+  },
+  strengthFill: {
+    height: "100%",
+    borderRadius: 2,
+    transition: "width 0.3s, background-color 0.3s",
+  },
+  strengthLabel: {
+    fontSize: 11,
+    color: "#64748b",
+    marginTop: 2,
+    display: "block",
+  },
+  phoneRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+  },
+  phoneFlag: {
+    fontSize: 13,
+    color: "#94a3b8",
+    whiteSpace: "nowrap",
+  },
+  forgotLink: {
+    background: "none",
+    border: "none",
+    color: "#6366f1",
+    fontSize: 13,
+    cursor: "pointer",
+    padding: 0,
+    marginBottom: 16,
+    display: "block",
+  },
+  errorBox: {
+    backgroundColor: "rgba(239, 68, 68, 0.1)",
+    border: "1px solid rgba(239, 68, 68, 0.3)",
+    borderRadius: 8,
+    padding: "10px 14px",
+    fontSize: 13,
+    color: "#fca5a5",
+    marginBottom: 14,
+  },
+  successBox: {
+    backgroundColor: "rgba(34, 197, 94, 0.1)",
+    border: "1px solid rgba(34, 197, 94, 0.3)",
+    borderRadius: 8,
+    padding: "10px 14px",
+    fontSize: 13,
+    color: "#86efac",
+    marginBottom: 14,
+  },
+  btnPrimary: {
+    width: "100%",
+    padding: "13px",
     borderRadius: 10,
-    padding: "13px 0",
+    border: "none",
+    background: "linear-gradient(135deg, #6366f1, #8b5cf6)",
+    color: "#fff",
     fontSize: 15,
     fontWeight: 700,
     cursor: "pointer",
-    letterSpacing: 0.3,
+    marginBottom: 14,
+    transition: "opacity 0.2s",
   },
   btnSecondary: {
-    background: "#f1f5f9",
-    color: "#4f46e5",
-    border: "1.5px solid #c7d2fe",
+    width: "100%",
+    padding: "13px",
     borderRadius: 10,
-    padding: "12px 0",
+    border: "1px solid #2a2f3e",
+    backgroundColor: "transparent",
+    color: "#e2e8f0",
     fontSize: 15,
     fontWeight: 600,
     cursor: "pointer",
+    marginBottom: 14,
   },
-  btnGhost: {
-    background: "transparent",
-    color: "#6366f1",
+  btnDisabled: {
+    width: "100%",
+    padding: "13px",
+    borderRadius: 10,
     border: "none",
-    borderRadius: 10,
-    padding: "8px 0",
-    fontSize: 14,
-    cursor: "pointer",
-    textDecoration: "underline",
+    background: "#374151",
+    color: "#9ca3af",
+    fontSize: 15,
+    fontWeight: 700,
+    cursor: "not-allowed",
+    marginBottom: 14,
   },
-  btnDanger: {
-    background: "#fee2e2",
-    color: "#dc2626",
-    border: "1.5px solid #fca5a5",
-    borderRadius: 10,
-    padding: "12px 0",
-    fontSize: 14,
+  switchLink: {
+    textAlign: "center",
+    fontSize: 13,
+    color: "#64748b",
+    margin: 0,
+  },
+  link: {
+    color: "#6366f1",
+    cursor: "pointer",
     fontWeight: 600,
-    cursor: "pointer",
-    marginTop: 8,
   },
-  alertError: {
-    background: "#fef2f2",
-    border: "1px solid #fca5a5",
-    color: "#dc2626",
-    borderRadius: 8,
-    padding: "10px 14px",
-    fontSize: 13,
-    marginBottom: 8,
-  },
-  alertInfo: {
-    background: "#f0fdf4",
-    border: "1px solid #86efac",
-    color: "#166534",
-    borderRadius: 8,
-    padding: "10px 14px",
-    fontSize: 13,
-    marginBottom: 8,
-    fontFamily: "monospace",
-  },
-  avatarRow: {
+  otpRow: {
     display: "flex",
+    gap: 10,
+    justifyContent: "center",
+    marginBottom: 20,
+  },
+  otpBox: {
+    width: 46,
+    height: 54,
+    textAlign: "center",
+    fontSize: 22,
+    fontWeight: 700,
+    borderRadius: 10,
+    border: "1px solid #2a2f3e",
+    backgroundColor: "#0f1117",
+    color: "#f1f5f9",
+    outline: "none",
+  },
+  otpTimer: {
+    textAlign: "center",
+    fontSize: 13,
+    color: "#64748b",
+    marginBottom: 20,
+  },
+  devNote: {
+    textAlign: "center",
+    fontSize: 11,
+    color: "#475569",
+    marginTop: 12,
+    padding: "8px",
+    backgroundColor: "rgba(99, 102, 241, 0.05)",
+    borderRadius: 6,
+    border: "1px solid rgba(99, 102, 241, 0.1)",
+  },
+  avatarSection: {
+    display: "flex",
+    flexDirection: "column",
     alignItems: "center",
-    gap: 16,
-    marginBottom: 4,
+    marginBottom: 24,
   },
   avatarCircle: {
-    width: 72,
-    height: 72,
+    width: 90,
+    height: 90,
     borderRadius: "50%",
-    background: "#e0e7ff",
-    backgroundSize: "cover",
-    backgroundPosition: "center",
+    backgroundColor: "#0f1117",
+    border: "2px dashed #2a2f3e",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
     cursor: "pointer",
-    border: "3px dashed #a5b4fc",
-    flexShrink: 0,
+    overflow: "hidden",
+    marginBottom: 10,
+  },
+  avatarImg: {
+    width: "100%",
+    height: "100%",
+    objectFit: "cover",
   },
   avatarPlaceholder: {
     fontSize: 28,
-    color: "#6366f1",
-    fontWeight: 700,
   },
-  handleRow: {
+  avatarUploadBtn: {
+    background: "none",
+    border: "none",
+    color: "#6366f1",
+    fontSize: 13,
+    cursor: "pointer",
+    fontWeight: 600,
+    padding: 0,
+  },
+  ndaNotice: {
     display: "flex",
-    alignItems: "center",
-    gap: 6,
-    border: "1.5px solid #e2e8f0",
+    alignItems: "flex-start",
+    gap: 0,
+    backgroundColor: "rgba(99, 102, 241, 0.08)",
+    border: "1px solid rgba(99, 102, 241, 0.2)",
     borderRadius: 10,
-    overflow: "hidden",
-    paddingLeft: 10,
-  },
-  atSign: {
-    color: "#94a3b8",
-    fontSize: 16,
-    fontWeight: 700,
-    flexShrink: 0,
-  },
-  orDivider: {
-    textAlign: "center",
-    color: "#94a3b8",
-    fontSize: 13,
-  },
-  profileCard: {
-    display: "flex",
-    alignItems: "center",
-    gap: 16,
-    background: "#f8fafc",
-    borderRadius: 14,
-    padding: "16px 18px",
-    marginBottom: 8,
-  },
-  avatarImg: {
-    width: 60,
-    height: 60,
-    borderRadius: "50%",
-    objectFit: "cover",
-    border: "3px solid #a5b4fc",
-  },
-  avatarFallback: {
-    width: 60,
-    height: 60,
-    borderRadius: "50%",
-    background: "linear-gradient(135deg, #4f46e5, #7c3aed)",
-    color: "#fff",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    fontSize: 24,
-    fontWeight: 700,
-    flexShrink: 0,
-  },
-  profileName: {
-    fontSize: 18,
-    fontWeight: 700,
-    color: "#1e293b",
-  },
-  profileHandle: {
-    fontSize: 14,
-    color: "#6366f1",
-    fontWeight: 600,
-  },
-  profileEmail: {
-    fontSize: 12,
-    color: "#94a3b8",
-  },
-  profilePhone: {
-    fontSize: 12,
-    color: "#94a3b8",
-  },
-  statusBox: {
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-    background: "#f0fdf4",
-    border: "1px solid #86efac",
-    borderRadius: 8,
-    padding: "8px 14px",
-  },
-  statusDot: {
-    color: "#22c55e",
-    fontSize: 12,
-  },
-  statusText: {
-    color: "#166534",
-    fontSize: 13,
-    fontWeight: 600,
-  },
-  ndaBox: {
-    background: "linear-gradient(135deg, #1e1b4b, #312e81)",
-    borderRadius: 14,
-    padding: "18px 20px",
-    color: "#fff",
-  },
-  ndaTitle: {
-    fontSize: 15,
-    fontWeight: 700,
-    marginBottom: 8,
-  },
-  ndaBody: {
-    fontSize: 12,
-    lineHeight: 1.7,
-    color: "#c7d2fe",
-    marginBottom: 10,
-  },
-  ndaStatus: {
+    padding: "12px 14px",
     fontSize: 12,
     color: "#a5b4fc",
-    fontStyle: "italic",
+    marginBottom: 20,
+    lineHeight: 1.5,
   },
-  comingSoon: {
-    background: "#fafafa",
-    border: "1px solid #e2e8f0",
-    borderRadius: 12,
-    padding: "14px 18px",
-  },
-  comingSoonTitle: {
-    fontSize: 13,
-    fontWeight: 700,
-    color: "#64748b",
-    marginBottom: 8,
-    textTransform: "uppercase",
-    letterSpacing: 0.8,
-  },
-  featureList: {
-    margin: 0,
-    padding: "0 0 0 4px",
-    listStyle: "none",
+  dashboard: {
+    minHeight: "100vh",
+    backgroundColor: "#0f1117",
     display: "flex",
     flexDirection: "column",
-    gap: 6,
   },
-  progress: {
+  dashboardHeader: {
+    backgroundColor: "#1a1f2e",
+    borderBottom: "1px solid #2a2f3e",
+    padding: "16px 20px",
     display: "flex",
-    justifyContent: "center",
-    gap: 8,
-    marginTop: 20,
+    alignItems: "center",
+    justifyContent: "space-between",
+    position: "sticky",
+    top: 0,
+    zIndex: 10,
   },
-  progressDot: {
-    width: 10,
-    height: 10,
+  dashUserRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 12,
+  },
+  dashAvatar: {
+    width: 42,
+    height: 42,
     borderRadius: "50%",
-    transition: "background 0.3s",
+    backgroundColor: "#6366f1",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+    flexShrink: 0,
+  },
+  dashAvatarImg: {
+    width: "100%",
+    height: "100%",
+    objectFit: "cover",
+  },
+  dashAvatarInitials: {
+    fontSize: 16,
+    fontWeight: 700,
+    color: "#fff",
+  },
+  dashUserInfo: {
+    display: "flex",
+    flexDirection: "column",
+  },
+  dashUserName: {
+    fontSize: 15,
+    fontWeight: 700,
+    color: "#f1f5f9",
+  },
+  dashUserEmail: {
+    fontSize: 12,
+    color: "#64748b",
+  },
+  logoutBtn: {
+    padding: "8px 16px",
+    borderRadius: 8,
+    border: "1px solid #2a2f3e",
+    backgroundColor: "transparent",
+    color: "#ef4444",
+    fontSize: 13,
+    fontWeight: 600,
+    cursor: "pointer",
+  },
+  dashContent: {
+    flex: 1,
+    padding: "20px 16px",
+    maxWidth: 640,
+    margin: "0 auto",
+    width: "100%",
+    boxSizing: "border-box",
+  },
+  identityCard: {
+    backgroundColor: "#1a1f2e",
+    border: "1px solid #2a2f3e",
+    borderRadius: 16,
+    padding: "20px",
+    marginBottom: 20,
+  },
+  identityTitle: {
+    fontSize: 15,
+    fontWeight: 700,
+    color: "#f1f5f9",
+    marginBottom: 16,
+    display: "flex",
+    alignItems: "center",
+  },
+  identityRows: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 10,
+  },
+  identityRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingBottom: 10,
+    borderBottom: "1px solid #1e2433",
+  },
+  identityLabel: {
+    fontSize: 12,
+    color: "#64748b",
+    fontWeight: 600,
+    textTransform: "uppercase",
+    letterSpacing: "0.05em",
+    flexShrink: 0,
+    marginRight: 12,
+  },
+  identityValue: {
+    fontSize: 13,
+    color: "#cbd5e1",
+    textAlign: "right",
+    wordBreak: "break-all",
+  },
+  dashGrid: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: 12,
+    marginBottom: 20,
+  },
+  dashCard: {
+    backgroundColor: "#1a1f2e",
+    border: "1px solid #2a2f3e",
+    borderRadius: 14,
+    padding: "18px 14px",
+    cursor: "pointer",
+    transition: "border-color 0.2s",
+  },
+  dashCardIcon: {
+    fontSize: 28,
+    marginBottom: 8,
+  },
+  dashCardTitle: {
+    fontSize: 14,
+    fontWeight: 700,
+    color: "#f1f5f9",
+    marginBottom: 4,
+  },
+  dashCardDesc: {
+    fontSize: 11,
+    color: "#64748b",
+    marginBottom: 8,
+    lineHeight: 1.4,
+  },
+  dashCardBadge: {
+    fontSize: 10,
+    color: "#6366f1",
+    fontWeight: 700,
+    backgroundColor: "rgba(99, 102, 241, 0.1)",
+    padding: "2px 8px",
+    borderRadius: 20,
+    display: "inline-block",
+  },
+  legalBanner: {
+    backgroundColor: "rgba(99, 102, 241, 0.08)",
+    border: "1px solid rgba(99, 102, 241, 0.25)",
+    borderRadius: 14,
+    padding: "18px 20px",
+    color: "#a5b4fc",
+    fontSize: 13,
+    lineHeight: 1.5,
+    textAlign: "center",
   },
 };
