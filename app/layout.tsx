@@ -2,12 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Confi — Confidential Messaging",
-  description:
-    "Secure messaging with legally-binding International NDA protection for confidential conversations.",
-  manifest: "/manifest.json",
-  themeColor: "#0f0f1a",
-  viewport: "width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover",
+  title: "Confi — Secure Confidential Messaging",
+  description: "The world's first messaging app with built-in international NDA protection. Secure, encrypted, legally binding.",
+  keywords: ["messaging", "NDA", "confidential", "secure", "encrypted", "legal"],
 };
 
 export default function RootLayout({
@@ -17,12 +14,6 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <head>
-        <meta name="apple-mobile-web-app-capable" content="yes" />
-        <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-        <meta name="apple-mobile-web-app-title" content="Confi" />
-        <meta name="mobile-web-app-capable" content="yes" />
-      </head>
       <body>{children}</body>
     </html>
   );
