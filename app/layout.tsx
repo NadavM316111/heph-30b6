@@ -1,23 +1,5 @@
-import type { Metadata } from "next";
 import "./globals.css";
-
-export const metadata: Metadata = {
-  title: "Confi — Secure Confidential Messaging",
-  description:
-    "The messaging app where every confidential conversation is legally protected by an international NDA, anchored to your verified identity.",
-  icons: {
-    icon: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔐</text></svg>",
-  },
-};
-
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
-  return (
-    <html lang="en">
-      <body>{children}</body>
-    </html>
-  );
+export const metadata = { title: "Confi Messaging App" };
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (<html lang="en"><body>{children}</body></html>);
 }

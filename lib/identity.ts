@@ -1,124 +1,94 @@
 /**
- * Identity utilities for Confi
- * Handles OTP generation, hashing, JWT-style session tokens,
- * avatar generation, and lightweight client-side encryption.
- *
- * NOTE: In production, OTP validation and JWT signing happen on the server.
- * The client-side "encryption" here uses XOR with a derived key for
- * obfuscation in localStorage — real encryption is enforced server-side
- * via the DB layer and the /api/auth endpoint.
+ * Confi Identity Utilities
+ * Handles ID generation, OTP, validation for the identity layer.
+ * These will tie into NDA signing — keep functions pure and deterministic.
  */
 
-/** Generate a cryptographically random 6-digit OTP */
+/**
+ * Generate a unique Confi User ID.
+ * Format: CNFI-XXXXXXXX-XXXX (URL-safe, uppercase)
+ */
+export function generateUserId(): string {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const seg1 = Array.from({ length: 8 }, () =>
+    chars[Math.floor(Math.random() * chars.length)]
+  ).join("");
+  const seg2 = Array.from({ length: 4 }, () =>
+    chars[Math.floor(Math.random() * chars.length)]
+  ).join("");
+  return `CNFI-${seg1}-${seg2}`;
+}
+
+/**
+ * Generate a 6-digit OTP (numeric only).
+ * In production this would be sent via SMS gateway (Twilio, etc).
+ * In this demo it is logged to console.
+ */
 export function generateOTP(): string {
-  if (typeof window !== "undefined" && window.crypto) {
-    const arr = new Uint32Array(1);
-    window.crypto.getRandomValues(arr);
-    return String(arr[0] % 1000000).padStart(6, "0");
-  }
-  return String(Math.floor(100000 + Math.random() * 900000));
+  return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
-/** Simple deterministic hash for OTP comparison (client-side only) */
-export function hashOTP(otp: string): string {
-  let hash = 5381;
-  for (let i = 0; i < otp.length; i++) {
-    hash = ((hash << 5) + hash) ^ otp.charCodeAt(i);
-    hash = hash & 0xffffffff;
-  }
-  return (hash >>> 0).toString(16).padStart(8, "0");
+/**
+ * Validate a phone number:
+ * - Must have 10–15 digits (after stripping +, spaces, dashes)
+ * - Allow leading + for country code
+ */
+export function validatePhone(phone: string): boolean {
+  const stripped = phone.replace(/[\s\-().]/g, "");
+  return /^\+?[0-9]{10,15}$/.test(stripped);
 }
 
-/** Generate a JWT-style session token (header.payload.signature format) */
-export function buildSessionToken(email: string): string {
-  const header = btoa(JSON.stringify({ alg: "HS256", typ: "JWT" }))
-    .replace(/=/g, "")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_");
-
-  const payload = btoa(
-    JSON.stringify({
-      sub: email,
-      iat: Math.floor(Date.now() / 1000),
-      exp: Math.floor(Date.now() / 1000) + 86400, // 24h
-      iss: "confi-app",
-      purpose: "identity-session",
-    })
-  )
-    .replace(/=/g, "")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_");
-
-  // Client-side pseudo-signature (real signing is server-side)
-  const sig = hashOTP(email + header + payload).slice(0, 16);
-
-  return `${header}.${payload}.${sig}`;
+/**
+ * Validate an email address (RFC 5322 simplified).
+ */
+export function validateEmail(email: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
 }
 
-/** XOR-based obfuscation for localStorage identity storage */
-export function encryptIdentity(data: Record<string, string>): string {
-  const json = JSON.stringify(data);
-  const key = "confi-identity-key-v1";
-  let result = "";
-  for (let i = 0; i < json.length; i++) {
-    result += String.fromCharCode(
-      json.charCodeAt(i) ^ key.charCodeAt(i % key.length)
-    );
-  }
-  return btoa(result);
+/**
+ * Validate a 6-digit numeric PIN.
+ */
+export function validatePin(pin: string): boolean {
+  return /^\d{6}$/.test(pin);
 }
 
-/** Reverse the XOR obfuscation */
-export function decryptIdentity(encoded: string): Record<string, string> {
-  const key = "confi-identity-key-v1";
-  const raw = atob(encoded);
-  let result = "";
-  for (let i = 0; i < raw.length; i++) {
-    result += String.fromCharCode(
-      raw.charCodeAt(i) ^ key.charCodeAt(i % key.length)
-    );
-  }
-  return JSON.parse(result) as Record<string, string>;
+/**
+ * Derive a display-safe truncated ID for UI use.
+ * e.g. "CNFI-AB12CD34-5678" → "CNFI-AB12…5678"
+ */
+export function shortUserId(userId: string): string {
+  if (!userId || userId.length < 10) return userId;
+  const parts = userId.split("-");
+  if (parts.length < 3) return userId;
+  return `${parts[0]}-${parts[1].slice(0, 4)}…${parts[2]}`;
 }
 
-const AVATAR_COLORS = [
-  "linear-gradient(135deg, #7c3aed, #4f46e5)",
-  "linear-gradient(135deg, #db2777, #9333ea)",
-  "linear-gradient(135deg, #0891b2, #0e7490)",
-  "linear-gradient(135deg, #059669, #0891b2)",
-  "linear-gradient(135deg, #d97706, #dc2626)",
-  "linear-gradient(135deg, #7c3aed, #db2777)",
-  "linear-gradient(135deg, #4f46e5, #0891b2)",
-  "linear-gradient(135deg, #16a34a, #0891b2)",
-  "linear-gradient(135deg, #9333ea, #db2777)",
-  "linear-gradient(135deg, #0ea5e9, #6366f1)",
-];
-
-/** Deterministically pick an avatar color from email */
-export function generateAvatarColor(email: string): string {
-  let hash = 0;
-  for (let i = 0; i < email.length; i++) {
-    hash = (hash * 31 + email.charCodeAt(i)) & 0xffffffff;
-  }
-  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
+/**
+ * Format a phone number for display.
+ * Strips extra spaces, ensures + prefix.
+ */
+export function formatPhone(phone: string): string {
+  const stripped = phone.replace(/\s+/g, "");
+  return stripped.startsWith("+") ? stripped : `+${stripped}`;
 }
 
-/** Get initials from a display name */
-export function getInitials(name: string): string {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return "?";
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-}
-
-/** Validate a JWT-style token (client-side expiry check only) */
-export function isTokenValid(token: string): boolean {
-  try {
-    const parts = token.split(".");
-    if (parts.length !== 3) return false;
-    const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
-    return payload.exp > Math.floor(Date.now() / 1000);
-  } catch {
-    return false;
-  }
+/**
+ * Returns the NDA-ready legal identity string.
+ * Used in NDA document headers.
+ */
+export function ndaIdentityString(params: {
+  legalName: string;
+  userId: string;
+  phone: string;
+  country: string;
+  countryCode: string;
+  createdAt: string;
+}): string {
+  return [
+    `Full Legal Name: ${params.legalName}`,
+    `Confi User ID: ${params.userId}`,
+    `Verified Phone: ${formatPhone(params.phone)}`,
+    `Jurisdiction: ${params.country} (${params.countryCode})`,
+    `Identity Verified: ${new Date(params.createdAt).toUTCString()}`,
+  ].join("\n");
 }
