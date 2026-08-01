@@ -1,25 +1,19 @@
-import type { Metadata } from "next";
 import "./globals.css";
+import InstallPrompt from "./components/InstallPrompt";
 
-export const metadata: Metadata = {
-  title: "Confi — Secure Confidential Messaging",
-  description:
-    "End-to-end encrypted messaging with legally binding NDA protection. Confi activates an international Non-Disclosure Agreement when Confidential Mode is enabled.",
-  keywords: ["secure messaging", "NDA", "confidential", "encrypted chat"],
+export const metadata = {
+  title: "Confi Messaging App",
+  appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "Confi Messaging App" },
 };
+export const viewport = { themeColor: "#0b1020", width: "device-width", initialScale: 1 };
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
-        <meta name="theme-color" content="#6C5CE7" />
-      </head>
-      <body>{children}</body>
+      <body>
+        {children}
+        <InstallPrompt />
+      </body>
     </html>
   );
 }
